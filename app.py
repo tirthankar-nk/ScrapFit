@@ -1,7 +1,9 @@
 
 import json
+import os
 import re
 import uuid
+import shutil
 from pathlib import Path
 
 import streamlit as st
@@ -13,6 +15,139 @@ st.set_page_config(
     page_icon="♻️",
     layout="wide",
 )
+
+
+# -------------------- OPTIONAL AI PROJECT DRAFTING --------------------
+
+GEMINI_DEFAULT_MODEL = "gemini-3.1-flash-lite"
+
+
+def get_gemini_api_key():
+    """Read the Gemini key from Streamlit secrets or the environment; never hard-code it."""
+    key = os.environ.get("GEMINI_API_KEY", "").strip()
+    try:
+        secret_key = st.secrets.get("GEMINI_API_KEY", "")
+        if secret_key:
+            key = str(secret_key).strip()
+    except Exception:
+        # st.secrets raises when no local secrets file exists; environment variables still work.
+        pass
+    return key
+
+
+def generate_ai_project_draft(description, material):
+    """Ask Gemini for an editable, approximate rectangular-parts draft (not engineering advice)."""
+    api_key = get_gemini_api_key()
+    if not api_key:
+        raise ValueError("Gemini API key is not configured.")
+
+    try:
+        from google import genai
+        from google.genai import types
+    except ImportError as exc:
+        raise RuntimeError("The google-genai package is missing. Install the updated requirements.txt.") from exc
+
+    model = os.environ.get("GEMINI_MODEL", GEMINI_DEFAULT_MODEL).strip() or GEMINI_DEFAULT_MODEL
+    prompt = f"""You help draft simple maker projects for a material-reuse app. Produce a preliminary cut list, not a certified engineering design.
+User's project description: {description}
+Primary material selected by the user: {material}
+
+Return ONLY valid JSON with this structure:
+{{
+  "title": "short project title",
+  "parts": [
+    {{"name": "clear part name", "length_mm": 300, "width_mm": 100, "thickness_mm": 18, "quantity": 2, "reason": "brief purpose"}}
+  ],
+  "design_notes": ["short practical consideration"],
+  "assumptions": ["dimensions are approximate starter estimates"]
+}}
+
+Requirements:
+- Use only the selected primary material ({material}) for every part.
+- Keep the cut list to 1–10 distinct rectangular pieces that could plausibly be cut from sheet/board/flat-stock offcuts.
+- Use millimetres and integer dimensions. Length and width must be 1–10000 mm; thickness 1–500 mm; quantity 1–20.
+- Choose sensible beginner-level, approximate dimensions where the user did not specify them. Include key panels, supports, legs or brackets where plausible, but do not overcomplicate.
+- Do not claim the draft is structurally safe, code-compliant, or construction-ready. Add a note to verify stability, joinery, material grade, tool suitability and safety before building.
+- Do not invent prices, inventory matches, seller details, or availability. ScrapFit's deterministic matcher handles inventory fits separately.
+- Keep notes concise. JSON only; no Markdown fences or extra text."""
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.2,
+            max_output_tokens=1800,
+        ),
+    )
+    response_text = getattr(response, "text", None)
+    if not response_text:
+        raise ValueError("Gemini returned an empty response.")
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError:
+        # Defensive handling for SDK/model responses that wrap JSON in code fences.
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", response_text.strip(), flags=re.IGNORECASE)
+        payload = json.loads(cleaned)
+
+    if not isinstance(payload, dict) or not isinstance(payload.get("parts"), list):
+        raise ValueError("The AI response did not contain a valid parts list.")
+    if not 1 <= len(payload["parts"]) <= 10:
+        raise ValueError("The AI draft must contain between 1 and 10 distinct parts. Please try a simpler description.")
+
+    validated_parts = []
+    total_pieces = 0
+    for raw in payload["parts"]:
+        if not isinstance(raw, dict):
+            raise ValueError("One of the AI-generated parts was malformed. Generate the draft again.")
+        name = str(raw.get("name", "")).strip()[:100]
+        if not name:
+            raise ValueError("A generated part did not have a name. Generate the draft again.")
+        try:
+            length = int(raw.get("length_mm"))
+            width = int(raw.get("width_mm"))
+            thickness = int(raw.get("thickness_mm"))
+            quantity = int(raw.get("quantity", 1))
+        except (TypeError, ValueError):
+            raise ValueError("The AI returned non-numeric dimensions. Generate the draft again.")
+        if not (1 <= length <= 10000 and 1 <= width <= 10000 and 1 <= thickness <= 500 and 1 <= quantity <= 20):
+            raise ValueError("The AI returned dimensions or quantity outside the allowed range. Generate the draft again.")
+        total_pieces += quantity
+        validated_parts.append({
+            "id": uuid.uuid4().hex[:10],
+            "name": name,
+            "length": length,
+            "width": width,
+            "thickness": thickness,
+            "quantity": quantity,
+            "reason": str(raw.get("reason", "")).strip()[:240],
+        })
+    if total_pieces > 30:
+        raise ValueError("The AI draft contains too many physical pieces. Reduce the project scope and try again.")
+
+    return {
+        "title": str(payload.get("title", "Custom project")).strip()[:100] or "Custom project",
+        "material": material,
+        "parts": validated_parts,
+        "design_notes": [str(x).strip()[:240] for x in payload.get("design_notes", []) if str(x).strip()][:6],
+        "assumptions": [str(x).strip()[:240] for x in payload.get("assumptions", []) if str(x).strip()][:6],
+        "source_description": description.strip(),
+    }
+
+
+def expand_part_quantities(parts):
+    """Expand quantity into individual required pieces for the existing one-piece allocator."""
+    expanded = []
+    for part in parts:
+        quantity = int(part.get("quantity", 1) or 1)
+        for index in range(quantity):
+            item = {key: value for key, value in part.items() if key != "id"}
+            item["quantity"] = 1
+            if quantity > 1:
+                item["name"] = f"{part['name']} ({index + 1}/{quantity})"
+            expanded.append(item)
+    return expanded
 
 # -------------------- SCRAPFIT UI THEME --------------------
 
@@ -360,6 +495,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 DATA_FILE = Path(__file__).with_name("inventory.json")
+IMAGE_DIR = Path(__file__).with_name("scrapfit_images")
+IMAGE_DIR.mkdir(exist_ok=True)
 
 SAMPLE_INVENTORY = [
     {
@@ -465,9 +602,13 @@ def load_inventory():
 
 
 def save_inventory(items):
-    """Save inventory to a local JSON file."""
-    with DATA_FILE.open("w", encoding="utf-8") as file:
+    """Save inventory atomically to inventory.json beside app.py."""
+    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    temporary_file = DATA_FILE.with_suffix(DATA_FILE.suffix + ".tmp")
+    with temporary_file.open("w", encoding="utf-8") as file:
         json.dump(items, file, indent=2, ensure_ascii=False)
+        file.flush()
+    temporary_file.replace(DATA_FILE)
 
 
 def find_matches(material, length, width, thickness, inventory, allowance_per_side=5):
@@ -513,12 +654,12 @@ def find_matches(material, length, width, thickness, inventory, allowance_per_si
 
 # Listing-specific illustrative stock photos. These are not photos of the exact
 # demo pieces. Different listings use different images where possible.
-WOOD_PLYWOOD_URL = "https://sosachen.de/cdn/shop/files/1573294661935---1.jpg?v=1738118210&width=1000"
-WOOD_PINE_URL = "https://www.gardenbox.co.nz/cdn/shop/files/PineOffcutsFirewood_2.jpg?v=1771889997&width=1445"
-WOOD_PANEL_URL = "https://gatediysupplies.co.uk/cdn/shop/files/PLYWOOD_OFFCUTS_85MM_2_6475f63f-24de-4435-ac49-cd3c0f6d570b_1500x.jpg?v=1746008188"
-METAL_SHEET_URL = "https://i.etsystatic.com/55905389/r/il/750f82/6906538769/il_fullxfull.6906538769_4qog.jpg"
+WOOD_PLYWOOD_URL = "https://c.pxhere.com/photos/92/19/workshop_work_tool_wood_business-20011.jpg!d"
+WOOD_PINE_URL = "https://c.pxhere.com/photos/3b/70/workshop_lumber_iron_metal_wood_tool_old_dirty-900855.jpg!d"
+WOOD_PANEL_URL = "https://c.pxhere.com/photos/92/19/workshop_work_tool_wood_business-20011.jpg!d"
+METAL_SHEET_URL = "https://images.unsplash.com/photo-1656285523078-b77363624310?auto=format&fit=crop&w=1000&q=80"
 METAL_OFFCUT_URL = "https://images.unsplash.com/photo-1656285523078-b77363624310?auto=format&fit=crop&w=1000&q=80"
-METAL_PLATE_URL = "https://sheetmetalindustries.com/app/uploads/2025/09/Steel-Plate-Supplier.webp"
+METAL_PLATE_URL = "https://c.pxhere.com/photos/86/86/tools_old_oxide_wood_iron-665653.jpg!d"
 METAL_RODS_URL = "https://tiimg.tistatic.com/fp/1/008/429/reliable-12-mm-solid-galvanized-finished-hot-rolled-iron-rods-329.jpg"
 
 LISTING_IMAGES = {
@@ -544,12 +685,77 @@ IDEA_IMAGES = {
 }
 
 def material_image(piece_or_material):
+    """Use a real-photo URL for sample listings, or a seller-uploaded local photo."""
     if isinstance(piece_or_material, dict):
+        image_name = piece_or_material.get("image_file")
+        if image_name:
+            local_path = IMAGE_DIR / Path(str(image_name)).name
+            # Ignore old placeholder SVG drawings; use real photo URLs instead.
+            if local_path.is_file() and local_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}:
+                return str(local_path)
         return LISTING_IMAGES.get(
             str(piece_or_material.get("id", "")),
             STOCK_IMAGES.get(piece_or_material.get("material", "Wood"), STOCK_IMAGES["Wood"]),
         )
     return STOCK_IMAGES.get(piece_or_material, STOCK_IMAGES["Wood"])
+
+
+def project_cost_summary(parts, inventory, material, allowance=5):
+    """Estimate new-material area cost and whole-offcut cost after shared-stock cutting.
+
+    New-material equivalent is a rough area-based proxy from sample inventory prices.
+    Scrap cost counts each physical offcut used once, even when several parts are cut
+    from it. Cutting patterns use a simple shelf-packing heuristic, not industrial nesting.
+    """
+    # Expand per-part quantities so cost and cutting estimates cover every required piece.
+    parts = expand_part_quantities(parts)
+    available_inventory = [
+        item for item in inventory if item.get("status", "Available") == "Available"
+    ]
+    unit_rates = []
+    for item in available_inventory:
+        if item.get("material") == material:
+            item_length = int(item.get("length", 0) or 0)
+            item_width = int(item.get("width", 0) or 0)
+            if item_length > 0 and item_width > 0:
+                unit_rates.append(float(item.get("price", 0) or 0) / (item_length * item_width))
+    rate = min(unit_rates) if unit_rates else 0
+
+    new_total = sum(
+        round(int(part.get("length", 0)) * int(part.get("width", 0)) * rate)
+        for part in parts
+    )
+    allocations = allocate_project_parts(
+        material, parts, available_inventory, allowance_per_side=allowance
+    )
+
+    scrap_total = 0
+    counted_units = set()
+    breakdown = []
+    for part, assigned in allocations:
+        area = int(part.get("length", 0)) * int(part.get("width", 0))
+        estimate = round(area * rate)
+        match = assigned[0] if assigned else None
+        scrap_price = None
+        scrap_note = "No suitable cut plan" if match is None else ""
+        if match is not None:
+            unit_key = match.get("cut_plan_unit_key")
+            if unit_key not in counted_units:
+                scrap_price = int(match.get("price", 0) or 0)
+                scrap_total += scrap_price
+                counted_units.add(unit_key)
+                scrap_note = "Whole offcut cost counted once"
+            else:
+                scrap_price = 0
+                scrap_note = "Same physical offcut; no extra listing cost"
+        breakdown.append({
+            "part": part.get("name", "Part"),
+            "new_estimate": estimate,
+            "scrap_price": scrap_price,
+            "scrap_note": scrap_note,
+            "match": match,
+        })
+    return breakdown, new_total, scrap_total
 
 
 def whatsapp_url(phone):
@@ -561,64 +767,157 @@ def whatsapp_url(phone):
 
 
 def allocate_project_parts(material, parts, inventory, allowance_per_side=5):
-    """Assign at most one whole offcut to each part and never reuse an offcut.
+    """Plan a simple 2-D shelf cutting layout across available offcuts.
 
-    Parts with fewer possible matches are handled first, reducing the chance
-    that a difficult-to-match part loses its only suitable offcut. For each
-    part, the smallest fitting available offcut is preferred.
+    Several required parts may be cut from one physical offcut. Listing quantity means
+    the number of separate physical offcuts available. Parts must match material and
+    thickness exactly; rotation is allowed. Each part gets allowance on all edges.
+
+    This deterministic shelf-packing heuristic is intentionally explainable; it is not
+    a guarantee of globally optimal nesting and does not model blade kerf or grain.
+    Returns the same shape as before: (required_part, [assigned_stock_piece]) pairs.
     """
-    prepared_parts = []
+    # Create one bin per physical offcut. A listing with quantity=3 creates three bins.
+    bins = []
+    for listing_index, source in enumerate(inventory):
+        if source.get("status", "Available") != "Available":
+            continue
+        quantity = max(0, min(100, int(source.get("quantity", 1) or 0)))
+        for unit_index in range(quantity):
+            source_id = source.get("id", f"listing-{listing_index}")
+            unit_key = f"{source_id}::unit-{unit_index + 1}"
+            bins.append({
+                "unit_key": unit_key,
+                "listing_index": listing_index,
+                "unit_index": unit_index + 1,
+                "piece": source.copy(),
+                "rows": [],
+                "used_width": 0,
+                "assigned": [],
+            })
 
-    for original_index, part in enumerate(parts):
-        candidates = find_matches(
-            material,
-            part["length"],
-            part["width"],
-            part["thickness"],
-            inventory,
-            allowance_per_side=allowance_per_side,
+    def fit_options(bin_state, part):
+        stock = bin_state["piece"]
+        if stock.get("material") != material:
+            return []
+        if int(stock.get("thickness", 0) or 0) != int(part.get("thickness", 0) or 0):
+            return []
+        stock_length = int(stock.get("length", 0) or 0)
+        stock_width = int(stock.get("width", 0) or 0)
+        need_l = int(part.get("length", 0) or 0) + 2 * int(allowance_per_side)
+        need_w = int(part.get("width", 0) or 0) + 2 * int(allowance_per_side)
+        if need_l <= 0 or need_w <= 0:
+            return []
+
+        orientations = [(need_l, need_w, False), (need_w, need_l, True)]
+        # Try placing into existing shelves first, preferring a close fit.
+        options = []
+        for row_index, row in enumerate(bin_state["rows"]):
+            for use_l, use_w, rotated in orientations:
+                if use_l <= stock_length - row["used_length"] and use_w <= row["height"]:
+                    options.append({
+                        "kind": "existing", "row_index": row_index,
+                        "length": use_l, "width": use_w, "rotated": rotated,
+                        "score": (0, row["height"] - use_w,
+                                  stock_length - row["used_length"] - use_l),
+                    })
+        if options:
+            return sorted(options, key=lambda option: option["score"])
+
+        # Otherwise create another shelf across the stock width.
+        for use_l, use_w, rotated in orientations:
+            if use_l <= stock_length and bin_state["used_width"] + use_w <= stock_width:
+                options.append({
+                    "kind": "new", "row_index": len(bin_state["rows"]),
+                    "length": use_l, "width": use_w, "rotated": rotated,
+                    "score": (1, use_w, stock_width - bin_state["used_width"] - use_w),
+                })
+        return sorted(options, key=lambda option: option["score"])
+
+    def apply_placement(bin_state, part, option, part_index):
+        if option["kind"] == "new":
+            bin_state["rows"].append({
+                "height": option["width"], "used_length": 0, "parts": []
+            })
+            bin_state["used_width"] += option["width"]
+        row = bin_state["rows"][option["row_index"]]
+        placement = {
+            "part_index": part_index,
+            "part_name": part.get("name", "Part"),
+            "length_with_allowance": option["length"],
+            "width_with_allowance": option["width"],
+            "rotated": option["rotated"],
+            "row_index": option["row_index"] + 1,
+        }
+        row["parts"].append(placement)
+        row["used_length"] += option["length"]
+        bin_state["assigned"].append(placement)
+
+    # Largest pieces first improves the chance of fitting demanding parts, while
+    # already-opened stock is preferred for smaller pieces so its cost is shared.
+    indexed_parts = list(enumerate(parts))
+    indexed_parts.sort(
+        key=lambda pair: (
+            -(int(pair[1].get("length", 0) or 0) * int(pair[1].get("width", 0) or 0)),
+            pair[0],
         )
-        prepared_parts.append({
-            "original_index": original_index,
-            "part": part,
-            "candidates": candidates,
-        })
-
-    # Match the most constrained parts first; use original order for ties.
-    prepared_parts.sort(
-        key=lambda item: (len(item["candidates"]), item["original_index"])
     )
 
-    used_piece_ids = set()
-    allocated_by_index = {}
+    assigned_by_index = {}
+    for part_index, part in indexed_parts:
+        eligible = []
+        for bin_state in bins:
+            options = fit_options(bin_state, part)
+            if not options:
+                continue
+            stock = bin_state["piece"]
+            stock_area = int(stock.get("length", 0) or 0) * int(stock.get("width", 0) or 0)
+            # Reusing an already-purchased physical offcut avoids buying another listing.
+            # If opening a new offcut, prefer smaller area then lower price.
+            opened = bool(bin_state["assigned"])
+            score = (
+                0 if opened else 1,
+                options[0]["score"],
+                0 if opened else stock_area,
+                0 if opened else int(stock.get("price", 0) or 0),
+                bin_state["listing_index"],
+                bin_state["unit_index"],
+            )
+            eligible.append((score, bin_state, options[0]))
+        if not eligible:
+            assigned_by_index[part_index] = None
+            continue
+        _, chosen_bin, chosen_option = min(eligible, key=lambda item: item[0])
+        apply_placement(chosen_bin, part, chosen_option, part_index)
+        assigned_by_index[part_index] = chosen_bin
 
-    for item in prepared_parts:
-        assigned_piece = None
-        for candidate in item["candidates"]:  # Already sorted best-fit first.
-            # Listing IDs are unique in the app. The fallback also gives
-            # older listings without an ID a stable key for this run.
-            piece_key = candidate.get("id")
-            if piece_key is None:
-                piece_key = (
-                    candidate.get("name"), candidate.get("material"),
-                    candidate.get("length"), candidate.get("width"),
-                    candidate.get("thickness"), candidate.get("area"),
-                )
-
-            if piece_key not in used_piece_ids:
-                used_piece_ids.add(piece_key)
-                assigned_piece = candidate
-                break
-
-        allocated_by_index[item["original_index"]] = (
-            [assigned_piece] if assigned_piece is not None else []
+    # Decorate assignment copies with a stable physical-offcut key and cut-plan notes.
+    results = []
+    for part_index, part in enumerate(parts):
+        chosen_bin = assigned_by_index.get(part_index)
+        if chosen_bin is None:
+            results.append((part, []))
+            continue
+        stock_copy = chosen_bin["piece"].copy()
+        stock_copy["cut_plan_unit_key"] = chosen_bin["unit_key"]
+        stock_copy["cut_plan_part_count"] = len(chosen_bin["assigned"])
+        stock_copy["cut_plan_part_names"] = [entry["part_name"] for entry in chosen_bin["assigned"]]
+        stock_copy["cut_plan_placement"] = next(
+            entry for entry in chosen_bin["assigned"] if entry["part_index"] == part_index
         )
-
-    # Return results in the same order the user entered the parts.
-    return [
-        (part, allocated_by_index[index])
-        for index, part in enumerate(parts)
-    ]
+        stock_copy["rotated"] = stock_copy["cut_plan_placement"]["rotated"]
+        stock_copy["waste_area"] = max(
+            0,
+            int(stock_copy.get("length", 0) or 0) * int(stock_copy.get("width", 0) or 0)
+            - stock_copy["cut_plan_placement"]["length_with_allowance"]
+            * stock_copy["cut_plan_placement"]["width_with_allowance"],
+        )
+        stock_copy["cut_plan_remaining_width"] = max(
+            0,
+            int(stock_copy.get("width", 0) or 0) - chosen_bin["used_width"],
+        )
+        results.append((part, [stock_copy]))
+    return results
 
 
 # -------------------- LOAD DATA --------------------
@@ -658,10 +957,10 @@ if page == "Home":
     with st.container(key="home_hero"):
         hero_copy, hero_art = st.columns([1.2, 0.9], vertical_alignment="center")
         with hero_copy:
-            st.markdown('<div class="sf-eyebrow">♻ Smart waste-to-value network</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sf-eyebrow">♻ Project-based matching for reusable materials</div>', unsafe_allow_html=True)
             st.markdown('<div class="sf-hero-title">Good materials deserve a second life.</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="sf-hero-copy">Usable workshop leftovers can be valuable to someone else. ScrapFit helps people discover reusable wood and metal offcuts, compare dimensions with project needs, and find suitable materials nearby before buying new.</div>',
+                '<div class="sf-hero-copy">Usable wood and metal offcuts can still be valuable. ScrapFit helps people compare leftover pieces with project requirements, prioritise suitable smaller offcuts, and explore local pickup options before buying new material.</div>',
                 unsafe_allow_html=True,
             )
             st.markdown('<div class="sf-hero-kicker">Project-first matching · Quality-aware listings · Local pickup</div>', unsafe_allow_html=True)
@@ -740,9 +1039,9 @@ if page == "Home":
     st.markdown('<div class="sf-section-kicker">Built as a practical prototype</div><div class="sf-section-title">Start simple. Learn from real use.</div>', unsafe_allow_html=True)
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown('<div class="sf-card"><h3>Available in this prototype</h3><p>• Browse sample wood and metal listings<br>• Search by dimensions and thickness<br>• Filter by pickup area<br>• Plan a project using a manual cut list<br>• Save listings temporarily for later<br>• Contact a seller using the available contact details</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><h3>Available in this prototype</h3><p>• Browse sample wood and metal listings<br>• Search by dimensions and thickness<br>• Filter by pickup area<br>• Plan a project using a manual cut list<br>• Generate an AI-assisted draft parts list in Custom Project (requires Gemini API setup)<br>• Upload listing photos (saved locally on this computer)<br>• View approximate pickup locations on the map<br>• Save listings temporarily for later<br>• Contact a seller using the available contact details</p></div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="sf-card"><h3>Possible next steps</h3><p>• AI-assisted draft parts lists from a project description<br>• Seller photo uploads and QR-based material records<br>• More detailed quality and availability management<br>• Map-based local discovery<br>• A shared online database for wider participation</p><p class="sf-footnote">These are proposed future features, not all active in the current local demo.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><h3>Possible next steps</h3><p>• QR-based material records<br>• More detailed quality and availability management<br>• A shared online database and cloud photo storage for wider participation</p><p class="sf-footnote">These are proposed future features, not all active in the current local demo.</p></div>', unsafe_allow_html=True)
 
     st.markdown('<p class="sf-footnote">Demo notice: this is a local prototype using sample inventory. Pickup areas and any illustrative visuals are not proof of a real listing or verified location. Always confirm dimensions, material grade, condition, price, availability, and collection arrangements with the seller before making a decision.</p>', unsafe_allow_html=True)
 
@@ -751,133 +1050,275 @@ if page == "Home":
 if page == "Find Scrap":
     st.header("🔎 Find a piece for your project")
     st.write(
-        "Enter the dimensions of the part you need. "
-        "ScrapFit searches for pieces that can accommodate it."
+        "Choose how you want to search. Only the fields for your selected search "
+        "type will appear below."
     )
 
-    with st.form("find_scrap_form"):
-        col1, col2 = st.columns(2)
+    # This is the first control on the page. The project-part dimensions are shown
+    # only when the user chooses Dimensions or Pickup place + Dimensions.
+    filter_mode = st.selectbox(
+        "Filter by",
+        ["Pickup place", "Dimensions", "Pickup place + Dimensions"],
+        key="find_filter_mode_v3",
+        help="Choose whether to browse by pickup place, match dimensions, or do both.",
+    )
 
-        with col1:
-            material = st.selectbox(
+    available_inventory = [
+        piece for piece in inventory
+        if piece.get("status", "Available") == "Available"
+    ]
+
+    # Make one consistent dropdown list from saved place fields. We compare
+    # exact normalized labels below instead of accepting free-text spellings.
+    place_labels = {}
+    for piece in available_inventory:
+        for value in (piece.get("pickup_location"), piece.get("area")):
+            if value and str(value).strip():
+                label = str(value).strip()
+                place_labels.setdefault(label.casefold(), label)
+    place_options = ["All places"] + sorted(place_labels.values(), key=str.casefold)
+
+    use_place = filter_mode in ("Pickup place", "Pickup place + Dimensions")
+    use_dimensions = filter_mode in ("Dimensions", "Pickup place + Dimensions")
+
+    selected_place = "All places"
+    if use_place:
+        selected_place = st.selectbox(
+            "Choose pickup place",
+            place_options,
+            key="find_filter_place_v3",
+            help="Select a saved pickup place; there is no free-text location field.",
+        )
+
+    # Project-part requirements are part of the Dimensions search option, not a
+    # separate always-visible form. They are used for matching only in the two
+    # modes that include Dimensions.
+    required_material = None
+    required_length = required_width = required_thickness = None
+    cutting_allowance = 5
+    if use_dimensions:
+        st.markdown("#### Dimensions required for your project part")
+        st.caption(
+            "These are the dimensions of the part you need. They control material "
+            "matching; they are not the optional listing-size filter fields."
+        )
+        dim_col1, dim_col2 = st.columns(2)
+        with dim_col1:
+            required_material = st.selectbox(
                 "Material",
                 ["Wood", "Metal"],
-                key="find_material",
+                key="find_required_material_v3",
             )
-            length = st.number_input(
-                "Required length (mm)",
-                min_value=1,
-                max_value=10000,
-                value=500,
-                step=10,
+            required_length = st.number_input(
+                "Required length (mm)", min_value=1, max_value=10000,
+                value=500, step=10, key="find_required_length_v3",
             )
-            thickness = st.number_input(
-                "Required thickness (mm)",
-                min_value=1,
-                max_value=500,
-                value=18 if material == "Wood" else 3,
-                step=1,
+            required_thickness = st.number_input(
+                "Required thickness (mm)", min_value=1, max_value=500,
+                value=18 if required_material == "Wood" else 3,
+                step=1, key="find_required_thickness_v3",
             )
-
-        with col2:
-            width = st.number_input(
-                "Required width (mm)",
-                min_value=1,
-                max_value=10000,
-                value=250,
-                step=10,
+        with dim_col2:
+            required_width = st.number_input(
+                "Required width (mm)", min_value=1, max_value=10000,
+                value=250, step=10, key="find_required_width_v3",
             )
-            allowance = st.number_input(
-                "Extra cutting allowance per side (mm)",
-                min_value=0,
-                max_value=100,
-                value=5,
-                step=1,
-                help="Adds this amount to every edge. For example, 5 mm per side means the offcut must fit a part 10 mm longer and 10 mm wider.",
+            cutting_allowance = st.number_input(
+                "Extra cutting allowance per side (mm)", min_value=0,
+                max_value=100, value=5, step=1,
+                key="find_required_allowance_v3",
+                help="Adds this allowance to each edge of the required part.",
             )
             st.caption(
-                "Thickness must match exactly. The allowance helps leave room for cutting; confirm grain direction and actual cutting requirements with the seller."
+                "Thickness must match exactly. Confirm grain direction and cutting "
+                "requirements with the seller."
             )
 
-        search_area = st.text_input(
-            "Pickup area / place (optional)",
-            placeholder="e.g. Guindy, Chennai",
-            help="Enter a neighbourhood or area name to limit results. This is a text-based area filter, not GPS distance search.",
-        )
-
-        search_submitted = st.form_submit_button(
-            "Find Matching Scrap",
-            type="primary",
-            use_container_width=True,
-        )
-
-    if search_submitted:
-        results = find_matches(
-            material, int(length), int(width), int(thickness),
-            [p for p in inventory if p.get("status", "Available") == "Available"],
-            allowance_per_side=int(allowance),
-        )
-        if search_area.strip():
-            area_query = search_area.strip().casefold()
-            results = [p for p in results if area_query in str(p.get("area", "")).casefold() or area_query in str(p.get("pickup_location", "")).casefold()]
-
-        st.session_state.find_results = results
-        st.session_state.find_query = (
-            material, int(length), int(width), int(thickness), int(allowance), search_area.strip()
-        )
-
-    if "find_results" in st.session_state:
-        results = st.session_state.find_results
-        query = st.session_state.find_query
-
-        st.subheader("Matching results")
-
-        st.caption(
-            f"Requirement: {query[0]} | {query[1]} × {query[2]} × "
-            f"{query[3]} mm"
-        )
-
-        if not results:
-            st.warning(
-                "No matching pieces found. Try different dimensions "
-                "or check the available inventory."
+    # Additional Amazon-style filters. Listing size bounds are independent of
+    # the required project-part dimensions above, and are only shown when the
+    # Dimensions mode is selected (the dropdown controls their visibility).
+    with st.expander("More filters", expanded=False):
+        if not use_dimensions:
+            material_options = sorted({
+                str(piece.get("material", "")).strip()
+                for piece in available_inventory if piece.get("material")
+            }, key=str.casefold)
+            filter_material = st.selectbox(
+                "Material type", ["All materials"] + material_options,
+                key="find_listing_material_v3",
             )
         else:
-            st.success(f"Found {len(results)} compatible piece(s).")
+            filter_material = "All materials"  # required material above is the material filter
 
+        conditions = sorted({
+            str(piece.get("condition", "Not specified"))
+            for piece in available_inventory
+        }, key=str.casefold)
+        filter_condition = st.selectbox(
+            "Condition", ["All conditions"] + conditions,
+            key="find_listing_condition_v3",
+        )
+        all_prices = [int(piece.get("price", 0) or 0) for piece in available_inventory]
+        price_cap = max(100, max(all_prices, default=100))
+        min_price, max_price = st.slider(
+            "Price range (₹ per piece)", 0, price_cap, (0, price_cap),
+            step=max(1, price_cap // 100), key="find_listing_price_v3",
+        )
+
+        if use_dimensions:
+            st.markdown("**Optional listing-size limits (independent of required part dimensions)**")
+            size_left, size_right = st.columns(2)
+            with size_left:
+                min_listing_length = st.number_input(
+                    "Minimum listing length (mm)", min_value=0, max_value=10000,
+                    value=0, step=50, key="find_min_listing_length_v3",
+                )
+                min_listing_width = st.number_input(
+                    "Minimum listing width (mm)", min_value=0, max_value=10000,
+                    value=0, step=50, key="find_min_listing_width_v3",
+                )
+                min_listing_thickness = st.number_input(
+                    "Minimum listing thickness (mm)", min_value=0, max_value=500,
+                    value=0, step=1, key="find_min_listing_thickness_v3",
+                )
+            with size_right:
+                max_listing_length = st.number_input(
+                    "Maximum listing length (mm; 0 = any)", min_value=0,
+                    max_value=10000, value=0, step=50,
+                    key="find_max_listing_length_v3",
+                )
+                max_listing_width = st.number_input(
+                    "Maximum listing width (mm; 0 = any)", min_value=0,
+                    max_value=10000, value=0, step=50,
+                    key="find_max_listing_width_v3",
+                )
+                max_listing_thickness = st.number_input(
+                    "Maximum listing thickness (mm; 0 = any)", min_value=0,
+                    max_value=500, value=0, step=1,
+                    key="find_max_listing_thickness_v3",
+                )
+        else:
+            min_listing_length = min_listing_width = min_listing_thickness = 0
+            max_listing_length = max_listing_width = max_listing_thickness = 0
+
+    button_label = "Find Matching Scrap" if use_dimensions else "Show Scrap at Selected Place"
+    search_submitted = st.button(
+        button_label, type="primary", use_container_width=True,
+        key="find_apply_filters_v3",
+    )
+
+    if search_submitted:
+        if use_dimensions:
+            search_results = find_matches(
+                required_material, int(required_length), int(required_width),
+                int(required_thickness), available_inventory,
+                allowance_per_side=int(cutting_allowance),
+            )
+        else:
+            # In place-only mode, browse listings at the chosen place without
+            # applying the separate required-project-dimensions matching rule.
+            search_results = []
+            for source_piece in available_inventory:
+                piece = source_piece.copy()
+                piece["rotated"] = False
+                piece["waste_area"] = None
+                search_results.append(piece)
+
+        if use_place and selected_place != "All places":
+            chosen_key = selected_place.casefold()
+            search_results = [
+                piece for piece in search_results
+                if chosen_key in {
+                    str(piece.get("area", "")).strip().casefold(),
+                    str(piece.get("pickup_location", "")).strip().casefold(),
+                }
+            ]
+
+        if filter_material != "All materials":
+            search_results = [
+                piece for piece in search_results
+                if str(piece.get("material", "")).strip().casefold()
+                == filter_material.casefold()
+            ]
+        if filter_condition != "All conditions":
+            search_results = [
+                piece for piece in search_results
+                if str(piece.get("condition", "Not specified")) == filter_condition
+            ]
+        search_results = [
+            piece for piece in search_results
+            if min_price <= int(piece.get("price", 0) or 0) <= max_price
+        ]
+
+        if use_dimensions:
+            search_results = [
+                piece for piece in search_results
+                if int(piece.get("length", 0) or 0) >= int(min_listing_length)
+                and int(piece.get("width", 0) or 0) >= int(min_listing_width)
+                and int(piece.get("thickness", 0) or 0) >= int(min_listing_thickness)
+                and (not max_listing_length or int(piece.get("length", 0) or 0) <= int(max_listing_length))
+                and (not max_listing_width or int(piece.get("width", 0) or 0) <= int(max_listing_width))
+                and (not max_listing_thickness or int(piece.get("thickness", 0) or 0) <= int(max_listing_thickness))
+            ]
+
+        st.session_state.find_results_v3 = search_results
+        st.session_state.find_search_mode_v3 = filter_mode
+        st.session_state.find_search_place_v3 = selected_place
+        st.session_state.find_search_dimensions_v3 = (
+            (required_material, int(required_length), int(required_width),
+             int(required_thickness), int(cutting_allowance)) if use_dimensions else None
+        )
+
+    # Hide stale results if the user switches search mode, so a Place-only page
+    # never continues displaying results from a previous Dimensions search.
+    if (
+        "find_results_v3" in st.session_state
+        and st.session_state.get("find_search_mode_v3") == filter_mode
+    ):
+        results = st.session_state.find_results_v3
+        saved_place = st.session_state.get("find_search_place_v3", "All places")
+        saved_dimensions = st.session_state.get("find_search_dimensions_v3")
+        st.subheader("Matching results")
+
+        if saved_dimensions:
+            mat_q, len_q, wid_q, thick_q, allowance_q = saved_dimensions
+            st.caption(
+                f"Requirement: {mat_q} | {len_q} × {wid_q} × {thick_q} mm "
+                f"(cutting allowance: {allowance_q} mm per side)"
+            )
+        elif saved_place == "All places":
+            st.caption("Showing available listings across all pickup places; dimensions were not used to match this search.")
+        else:
+            st.caption(f"Showing available listings at {saved_place}; dimensions were not used to match this search.")
+
+        if not results:
+            st.warning("No listings match the selected filters. Try another place, widen the price or listing-size range, or change the condition.")
+        else:
+            st.success(f"Found {len(results)} listing(s) for the selected search.")
             for index, piece in enumerate(results, start=1):
                 with st.container(border=True):
                     photo_col, left, middle, right = st.columns([1.25, 2.5, 2, 1])
-
                     with photo_col:
                         st.image(material_image(piece), use_container_width=True)
-                        st.caption("Illustrative stock photo")
-
+                        st.caption("Sample reference photo — not a photo of this exact piece")
                     with left:
-                        st.markdown(f"**{index}. {piece['name']}**")
-                        st.write(
-                            f"{piece['material']} · {piece['condition']}"
-                        )
-                        st.caption(
-                            f"Pickup area: {piece['area']}"
-                        )
-
+                        st.markdown(f"**{index}. {piece.get('name', 'Unnamed offcut')}**")
+                        st.write(f"{piece.get('material', 'Material unspecified')} · {piece.get('condition', 'Condition not specified')}")
+                        st.caption(f"Pickup area: {piece.get('area') or piece.get('pickup_location') or 'Not specified'}")
                     with middle:
                         st.write(
-                            f"**Size:** {piece['length']} × "
-                            f"{piece['width']} × "
-                            f"{piece['thickness']} mm"
+                            f"**Size:** {piece.get('length', '?')} × "
+                            f"{piece.get('width', '?')} × {piece.get('thickness', '?')} mm"
                         )
-                        st.write(
-                            f"**Unused surface area:** "
-                            f"{piece['waste_area']:,} mm²"
-                        )
-                        if piece["rotated"]:
-                            st.caption("Fits when rotated 90°")
-
+                        if piece.get("waste_area") is not None:
+                            st.write(f"**Unused surface area:** {piece['waste_area']:,} mm²")
+                            if piece.get("rotated"):
+                                st.caption("Fits when rotated 90°")
+                        else:
+                            st.caption("Dimensions shown for reference; not used to match this Place-only search.")
                     with right:
-                        st.metric("Price", f"₹{piece['price']}")
-                        st.caption(f"ID: {piece['id']}")
+                        st.metric("Price", f"₹{piece.get('price', '—')}")
+                        st.caption(f"ID: {piece.get('id', '—')}")
 
                     if piece.get("notes"):
                         st.caption(piece["notes"])
@@ -895,28 +1336,32 @@ if page == "Find Scrap":
                     else:
                         st.caption("Seller contact details have not been added to this listing yet.")
                     if st.button(
-                        "♡ Save for Later" if piece["id"] not in st.session_state.saved_ids else "♥ Saved",
-                        key=f"save_find_{piece['id']}",
+                        "♡ Save for Later" if piece.get("id") not in st.session_state.saved_ids else "♥ Saved",
+                        key=f"save_find_v3_{piece.get('id', index)}",
                     ):
-                        if piece["id"] not in st.session_state.saved_ids:
+                        if piece.get("id") not in st.session_state.saved_ids:
                             st.session_state.saved_ids.append(piece["id"])
                         st.toast("Saved for later")
 
             st.markdown("### Map view (demo locations)")
-            st.caption("Hover over a pin to see the listing name, dimensions, price, condition and pickup area. Pins are illustrative, not verified seller addresses.")
+            st.caption("Hover over a pin to see listing details. Pins are illustrative demo locations, not verified seller addresses.")
             demo_points = []
             area_coords = {
                 "Area A": (80.225, 13.055),
                 "Area B": (80.245, 13.075),
                 "Area C": (80.265, 13.045),
                 "Chennai": (80.270, 13.082),
+                "Padur": (80.2258, 12.8077),
             }
             for idx, item in enumerate(results):
-                area = item.get("area", "Chennai")
-                lon, lat = area_coords.get(area, area_coords["Chennai"])
-                # Small deterministic offsets keep pins visible when demo areas overlap.
-                lon += (idx % 4) * 0.0025
-                lat += (idx % 3) * 0.002
+                area = item.get("area") or item.get("pickup_location") or "Chennai"
+                coords = item.get("coordinates") or {}
+                if isinstance(coords, dict) and coords.get("lat") is not None and coords.get("lon") is not None:
+                    lat, lon = float(coords["lat"]), float(coords["lon"])
+                else:
+                    lon, lat = area_coords.get(area, area_coords["Chennai"])
+                    lon += (idx % 4) * 0.0025
+                    lat += (idx % 3) * 0.002
                 demo_points.append({
                     "name": item.get("name", "Scrap"),
                     "id": item.get("id", ""),
@@ -937,9 +1382,15 @@ if page == "Find Scrap":
                         get_fill_color=[33, 87, 71, 220], get_line_color=[255, 255, 255],
                         line_width_min_pixels=2, stroked=True, pickable=True,
                     )
-                    tooltip = {"html": "<b>{name}</b><br/>ID: {id}<br/>{material} · {dimensions}<br/>{price}<br/>Condition: {condition}<br/>Pickup area: {area}", "style": {"backgroundColor": "#173F34", "color": "white", "padding": "10px", "borderRadius": "8px"}}
+                    tooltip = {
+                        "html": "<b>{name}</b><br/>ID: {id}<br/>{material} · {dimensions}<br/>{price}<br/>Condition: {condition}<br/>Pickup area: {area}",
+                        "style": {"backgroundColor": "#173F34", "color": "white", "padding": "10px", "borderRadius": "8px"},
+                    }
                     view_state = pdk.ViewState(latitude=13.07, longitude=80.245, zoom=11, pitch=0)
-                    st.pydeck_chart(pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=None), use_container_width=True)
+                    st.pydeck_chart(
+                        pdk.Deck(layers=[layer], initial_view_state=view_state, tooltip=tooltip, map_style=None),
+                        use_container_width=True,
+                    )
                 except Exception:
                     st.warning("Hoverable map needs pydeck. Showing the locations as a basic map instead.")
                     st.map(demo_points, latitude="lat", longitude="lon", size=80)
@@ -949,6 +1400,7 @@ if page == "Find Scrap":
 
 if page == "Project Planner":
     st.header("Project Planner")
+    planner_available = [p for p in inventory if p.get("status", "Available") == "Available"]
     st.write(
         "Add the rectangular parts required for a project. ScrapFit leaves a cutting "
         "allowance, prioritizes the smallest suitable offcuts, and never assigns one "
@@ -1023,11 +1475,6 @@ if page == "Project Planner":
             ["Wood", "Metal"],
             key="project_material",
         )
-        project_area = st.text_input(
-            "Pickup area / place (optional)",
-            placeholder="e.g. Guindy, Chennai",
-            help="Enter a neighbourhood or area name to search only listings from that area. This is not a GPS distance filter.",
-        )
         project_allowance = st.number_input(
             "Extra cutting allowance per side (mm)",
             min_value=0,
@@ -1044,10 +1491,9 @@ if page == "Project Planner":
         )
 
     if cut_list_submitted:
-        planner_inventory = [p for p in inventory if p.get("status", "Available") == "Available"]
-        if project_area.strip():
-            area_query = project_area.strip().casefold()
-            planner_inventory = [p for p in planner_inventory if area_query in str(p.get("area", "")).casefold() or area_query in str(p.get("pickup_location", "")).casefold()]
+        # Project Planner deliberately uses all available inventory; the optional
+        # listing filters belong only on Find Scrap.
+        planner_inventory = planner_available
         project_results = allocate_project_parts(
             project_material, parts, planner_inventory,
             allowance_per_side=int(project_allowance),
@@ -1069,59 +1515,69 @@ if page == "Project Planner":
             part for part, matches in project_results
             if not matches
         ]
-        # Display the assigned listings from smallest suitable piece to largest.
-        assigned_results.sort(
-            key=lambda item: (
-                item[1].get("length", 0) * item[1].get("width", 0),
-                item[1].get("waste_area", 0),
-            )
+        # Group required parts by physical offcut so a shared cut plan and its cost
+        # are displayed once rather than looking like repeated purchases.
+        cut_groups = {}
+        for part, piece in assigned_results:
+            unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
+            if unit_key not in cut_groups:
+                cut_groups[unit_key] = {"piece": piece, "parts": []}
+            cut_groups[unit_key]["parts"].append(part)
+        cut_groups = sorted(
+            cut_groups.values(),
+            key=lambda group: (
+                int(group["piece"].get("length", 0) or 0) * int(group["piece"].get("width", 0) or 0),
+                int(group["piece"].get("price", 0) or 0),
+            ),
         )
+
+        saved_parts = st.session_state.get("project_parts", [p for p, _ in project_results])
+        saved_material = st.session_state.get("project_material_saved", "Wood")
+        saved_allowance = st.session_state.get("project_allowance_saved", 5)
+        cost_rows, estimated_new_cost, matched_scrap_cost = project_cost_summary(saved_parts, inventory, saved_material, saved_allowance)
+        st.markdown("### Approximate material cost")
+        st.caption("Planning estimate only. New-material estimate uses the lowest sample listing price per square millimetre as an area-based proxy. Scrap cost counts each whole physical offcut used once. Labour, transport and blade kerf are excluded; the cutting layout is a simple heuristic, not industrial nesting.")
+        st.write(f"**Estimated new-material equivalent:** ₹{estimated_new_cost:,}")
+        st.write(f"**Whole-offcut scrap estimate:** ₹{matched_scrap_cost:,}")
+        st.dataframe([{"Part": r["part"], "Estimated new material (₹)": r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows], use_container_width=True, hide_index=True)
 
         st.info(
-            f"{len(assigned_results)} of {len(project_results)} part requirements have a unique offcut assigned. "
-            "Results below are sorted from smaller offcuts to larger offcuts. "
-            "Each listing is assigned to no more than one part in this project."
+            f"{len(assigned_results)} of {len(project_results)} required pieces can be cut from the current plan. "
+            "The same physical offcut can serve multiple parts if the simple shelf-layout heuristic finds a fit; each offcut is purchased only once in the estimate."
         )
 
-        if assigned_results:
-            st.markdown("### Available matched materials")
-            for rank, (part, piece) in enumerate(assigned_results, start=1):
+        if cut_groups:
+            st.markdown("### Offcuts used in the cutting plan")
+            for rank, group in enumerate(cut_groups, start=1):
+                piece = group["piece"]
+                parts_from_piece = group["parts"]
                 with st.container(border=True):
                     title_col, price_col = st.columns([4, 1])
                     with title_col:
                         st.markdown(f"**{rank}. {piece.get('name', 'Unnamed offcut')}**")
-                        st.caption(f"Assigned to: {part['name']} · Listing ID: {piece.get('id', 'N/A')}")
+                        st.caption(f"Listing ID: {piece.get('id', 'N/A')} · Physical offcut unit {piece.get('cut_plan_unit_key', '')}")
                     with price_col:
-                        st.metric("Price", f"₹{piece.get('price', 0):,}")
+                        st.metric("Cost counted once", f"₹{piece.get('price', 0):,}")
 
-                    detail_col, seller_col = st.columns(2)
-                    with detail_col:
-                        st.markdown("**Material details**")
-                        st.write(f"**Material:** {piece.get('material', 'Not specified')}")
-                        st.write(f"**Available size:** {piece.get('length', '?')} × {piece.get('width', '?')} × {piece.get('thickness', '?')} mm")
-                        st.write(f"**Condition:** {piece.get('condition', 'Not specified')}")
-                        st.write(f"**Required part:** {part['length']} × {part['width']} × {part['thickness']} mm")
-                        st.write(f"**Cutting allowance:** {piece.get('allowance_per_side', 5)} mm per side")
-                        if piece.get('rotated'):
-                            st.caption("This part fits when the offcut is rotated 90°.")
-                        st.write(f"**Extra surface area after allowance:** {piece.get('waste_area', 0):,} mm² (approx.)")
-                        if piece.get("notes"):
-                            st.write(f"**Seller's material description:** {piece['notes']}")
-
-                    with seller_col:
-                        st.markdown("**Seller and collection details**")
-                        st.write(f"**Shop / seller:** {piece.get('seller_name') or 'Not provided'}")
-                        st.write(f"**Pickup area:** {piece.get('area') or 'Not provided'}")
-                        st.write(f"**Address / landmark:** {piece.get('pickup_location') or 'Ask seller for address'}")
-                        st.write(f"**Pickup availability:** {piece.get('pickup_details') or 'Confirm pickup time with seller'}")
-                        phone = piece.get('contact_phone', '').strip()
-                        if phone:
-                            st.write(f"**Phone:** {phone}")
-                            contact_url = whatsapp_url(phone)
-                            if contact_url:
-                                st.markdown(f"[Contact seller on WhatsApp](<{contact_url}>)")
-                        else:
-                            st.warning("Contact number has not been provided for this listing.")
+                    st.write(f"**Available size:** {piece.get('length', '?')} × {piece.get('width', '?')} × {piece.get('thickness', '?')} mm")
+                    st.write(f"**Material / condition:** {piece.get('material', 'Not specified')} / {piece.get('condition', 'Not specified')}")
+                    st.write("**Parts planned from this offcut:**")
+                    for part in parts_from_piece:
+                        st.write(f"- {part['name']} — {part['length']} × {part['width']} × {part['thickness']} mm")
+                    if piece.get("notes"):
+                        st.write(f"**Seller's material description:** {piece['notes']}")
+                    st.write(f"**Shop / seller:** {piece.get('seller_name') or 'Not provided'}")
+                    st.write(f"**Pickup area:** {piece.get('area') or 'Not provided'}")
+                    st.write(f"**Address / landmark:** {piece.get('pickup_location') or 'Ask seller for address'}")
+                    st.write(f"**Pickup availability:** {piece.get('pickup_details') or 'Confirm pickup time with seller'}")
+                    phone = piece.get('contact_phone', '').strip()
+                    if phone:
+                        st.write(f"**Phone:** {phone}")
+                        contact_url = whatsapp_url(phone)
+                        if contact_url:
+                            st.markdown(f"[Contact seller on WhatsApp](<{contact_url}>)")
+                    else:
+                        st.warning("Contact number has not been provided for this listing.")
 
         if unmatched_parts:
             st.markdown("### Parts without an assigned offcut")
@@ -1142,99 +1598,130 @@ if page == "Project Planner":
 
 if page == "List Scrap":
     st.header("➕ List leftover material")
-    st.write(
-        "Enter the dimensions and details of a reusable offcut."
-    )
+    st.write("Enter the dimensions and details of a reusable offcut.")
 
-    with st.form("list_scrap_form", clear_on_submit=True):
+    # Reset the previous successful submission only when the user returns to
+    # this page. Failed validation or a save error never clears their entries.
+    if st.session_state.pop("reset_listing_form", False):
+        listing_defaults = {
+            "listing_name_input": "",
+            "listing_material_input": "Wood",
+            "listing_length_input": 600,
+            "listing_thickness_input": 18,
+            "listing_condition_input": "A - Clean",
+            "listing_width_input": 300,
+            "listing_quantity_input": 1,
+            "listing_price_input": 50,
+            "listing_area_input": "",
+            "listing_seller_input": "",
+            "listing_phone_input": "",
+            "listing_pickup_location_input": "",
+            "listing_pickup_details_input": "",
+            "listing_notes_input": "",
+            "listing_lat_input": 13.0827,
+            "listing_lon_input": 80.2707,
+        }
+        for state_key, default_value in listing_defaults.items():
+            st.session_state[state_key] = default_value
+
+    with st.form("list_scrap_form", clear_on_submit=False):
         listing_name = st.text_input(
-            "Listing name", placeholder="e.g. Plywood offcut"
+            "Listing name", placeholder="e.g. Plywood offcut", key="listing_name_input"
         )
 
         c1, c2 = st.columns(2)
 
         with c1:
             listing_material = st.selectbox(
-                "Material", ["Wood", "Metal"]
+                "Material", ["Wood", "Metal"], key="listing_material_input"
             )
             listing_length = st.number_input(
-                "Length (mm)",
-                min_value=1,
-                max_value=10000,
-                value=600,
-                step=10,
+                "Length (mm)", min_value=1, max_value=10000, value=600,
+                step=10, key="listing_length_input"
             )
+            default_thickness = 18 if listing_material == "Wood" else 3
+            # Keep the material-specific default when the user changes material,
+            # but don't overwrite a thickness value they have already entered.
+            if "listing_thickness_input" not in st.session_state:
+                st.session_state["listing_thickness_input"] = default_thickness
             listing_thickness = st.number_input(
-                "Thickness (mm)",
-                min_value=1,
-                max_value=500,
-                value=18 if listing_material == "Wood" else 3,
-                step=1,
+                "Thickness (mm)", min_value=1, max_value=500,
+                value=int(st.session_state.get("listing_thickness_input", default_thickness)),
+                step=1, key="listing_thickness_input"
             )
             listing_condition = st.selectbox(
                 "Condition",
-                [
-                    "A - Clean",
-                    "B - Minor marks",
-                    "C - Usable for small parts",
-                ],
+                ["A - Clean", "B - Minor marks", "C - Usable for small parts"],
+                key="listing_condition_input",
             )
 
         with c2:
             listing_width = st.number_input(
-                "Width (mm)",
-                min_value=1,
-                max_value=10000,
-                value=300,
-                step=10,
+                "Width (mm)", min_value=1, max_value=10000, value=300,
+                step=10, key="listing_width_input"
             )
             listing_quantity = st.number_input(
-                "Number of identical pieces",
-                min_value=1,
-                max_value=1000,
-                value=1,
-                step=1,
+                "Number of identical pieces", min_value=1, max_value=1000,
+                value=1, step=1, key="listing_quantity_input",
                 help="Use one listing for pieces with the same dimensions, condition and price.",
             )
             listing_price = st.number_input(
-                "Price per piece (₹)",
-                min_value=0,
-                max_value=1000000,
-                value=50,
-                step=10,
+                "Price per piece (₹)", min_value=0, max_value=1000000,
+                value=50, step=10, key="listing_price_input"
             )
             listing_area = st.text_input(
-                "Pickup area / neighbourhood *", placeholder="e.g. Guindy, Chennai"
+                "Pickup area / neighbourhood *", placeholder="e.g. Guindy, Chennai",
+                key="listing_area_input"
             )
 
         st.markdown("**Seller and pickup details**")
         seller_name = st.text_input(
-            "Seller or shop name", placeholder="e.g. ABC Fabrication Shop"
+            "Seller or shop name", placeholder="e.g. ABC Fabrication Shop",
+            key="listing_seller_input"
         )
         contact_phone = st.text_input(
-            "Phone / WhatsApp number", placeholder="Include country code, e.g. +91..."
+            "Phone / WhatsApp number", placeholder="Include country code, e.g. +91...",
+            key="listing_phone_input"
         )
         pickup_location = st.text_input(
-            "Pickup address or landmark", placeholder="Shop address, street, or nearby landmark"
+            "Pickup address or landmark", placeholder="Shop address, street, or nearby landmark",
+            key="listing_pickup_location_input"
         )
         pickup_details = st.text_area(
             "When can the buyer collect it?",
             placeholder="e.g. Weekdays 10 AM–5 PM; call before visiting; bring your own transport.",
+            key="listing_pickup_details_input",
         )
         listing_notes = st.text_area(
             "Material description (optional)",
             placeholder="Describe marks, material grade, storage condition, or other details",
+            key="listing_notes_input",
+        )
+        listing_photo = st.file_uploader(
+            "Upload a photo of this scrap (optional)",
+            type=["png", "jpg", "jpeg", "webp"],
+            help="For this local prototype, the photo is saved in a folder beside app.py on this computer.",
+        )
+        st.markdown("**Map pin (optional)**")
+        listing_lat = st.number_input(
+            "Latitude", min_value=-90.0, max_value=90.0, value=13.0827,
+            format="%.6f", key="listing_lat_input",
+            help="Use the approximate pickup location coordinates. Leave the default only for a demo pin.",
+        )
+        listing_lon = st.number_input(
+            "Longitude", min_value=-180.0, max_value=180.0, value=80.2707,
+            format="%.6f", key="listing_lon_input",
+            help="Use the approximate pickup location coordinates. Leave the default only for a demo pin.",
         )
 
         listing_submitted = st.form_submit_button(
-            "Add Listing",
-            type="primary",
-            use_container_width=True,
+            "Add Listing", type="primary", use_container_width=True
         )
 
     if listing_submitted:
+        # Validation is deliberately performed without clearing the form first.
         if not listing_name.strip() or not listing_area.strip():
-            st.error("Please enter a listing name and pickup area.")
+            st.error("Please enter both a listing name and a pickup area. Your entries are still here—complete the missing fields and submit again.")
         else:
             new_piece = {
                 "id": "S" + uuid.uuid4().hex[:6].upper(),
@@ -1253,18 +1740,46 @@ if page == "List Scrap":
                 "pickup_location": pickup_location.strip(),
                 "pickup_details": pickup_details.strip(),
                 "notes": listing_notes.strip(),
+                "coordinates": {"lat": float(listing_lat), "lon": float(listing_lon)},
             }
+            try:
+                if listing_photo is not None:
+                    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+                    safe_suffix = Path(listing_photo.name).suffix.lower()
+                    if safe_suffix not in {".png", ".jpg", ".jpeg", ".webp"}:
+                        safe_suffix = ".jpg"
+                    image_filename = f"{new_piece['id']}{safe_suffix}"
+                    image_path = IMAGE_DIR / image_filename
+                    with image_path.open("wb") as image_file:
+                        image_file.write(listing_photo.getbuffer())
+                    new_piece["image_file"] = image_filename
 
-            st.session_state.inventory.append(new_piece)
-            save_inventory(st.session_state.inventory)
-            st.success("Listing added to your local inventory.")
-            st.rerun()
+                # Save the new list first. Only update session state and navigate
+                # after the JSON write succeeds, preventing a false success message.
+                updated_inventory = list(st.session_state.inventory)
+                updated_inventory.append(new_piece)
+                save_inventory(updated_inventory)
+                st.session_state.inventory = updated_inventory
+                st.session_state["listing_added_notice"] = (
+                    f"Added '{new_piece['name']}' ({new_piece['id']}) to inventory."
+                )
+                st.session_state["reset_listing_form"] = True
+                st.session_state["main_navigation"] = "Inventory"
+                st.rerun()
+            except (OSError, TypeError, ValueError) as exc:
+                st.error(
+                    "ScrapFit couldn't save this listing to inventory.json. "
+                    f"Your form entries are preserved. Details: {exc}"
+                )
 
 
 # -------------------- INVENTORY --------------------
 
 if page == "Inventory":
     st.header("📦 Scrap inventory")
+    added_notice = st.session_state.pop("listing_added_notice", None)
+    if added_notice:
+        st.success(added_notice)
     st.caption("Browse and manage prototype listings. Quantity means identical pieces in one listing.")
     search_text = st.text_input("Search by name, ID or pickup area", key="inventory_search")
     filter_material = st.selectbox("Filter material", ["All", "Wood", "Metal"], key="inventory_material_filter")
@@ -1338,6 +1853,191 @@ if page == "Inventory":
 if page == "Project Ideas":
     st.header("💡 Project Ideas")
     st.write("Explore simple ways to give leftover materials a second life. These are starter ideas for a prototype, not certified engineering designs.")
+
+    # AI-powered custom project drafting is deliberately separate from the existing
+    # standard project ideas and manual Project Planner.
+    with st.container(border=True):
+        st.subheader("✨ Custom Project — describe what you want to make")
+        st.write("Describe your idea in everyday language. AI will suggest an editable starter cut list; ScrapFit's existing matching engine will then check available offcuts.")
+        custom_description = st.text_area(
+            "Project description",
+            placeholder="e.g. A compact wooden study table with a top, four legs, and a shelf underneath. It should fit in a small room.",
+            key="custom_ai_description",
+            height=105,
+        )
+        custom_material_choice = st.selectbox(
+            "Primary material for this draft", ["Wood", "Metal"], key="custom_ai_material"
+        )
+        st.caption("Gemini API setup is required for AI generation. The generated dimensions are estimates and must be reviewed before use.")
+        has_ai_key = bool(get_gemini_api_key())
+        if not has_ai_key:
+            st.info("AI is not configured yet. Set GEMINI_API_KEY in .streamlit/secrets.toml or as an environment variable. You can still build a parts list manually in Project Planner.")
+        if st.button("Generate draft parts list with AI", type="primary", key="custom_ai_generate", use_container_width=True):
+            if len(custom_description.strip()) < 10:
+                st.warning("Describe your project in a little more detail before generating a draft.")
+            elif not has_ai_key:
+                st.error("Gemini API key not found. Follow the setup instructions provided with this app, then restart Streamlit.")
+            else:
+                try:
+                    with st.spinner("Generating a starter cut list…"):
+                        draft_payload = generate_ai_project_draft(custom_description, custom_material_choice)
+                    st.session_state["custom_ai_draft"] = draft_payload
+                    st.session_state.pop("custom_ai_match_results", None)
+                    st.session_state.pop("custom_ai_match_signature", None)
+                    st.success("Draft generated. Review every part and edit the dimensions before matching.")
+                except Exception as exc:
+                    # Do not display raw exception text, which can contain request details.
+                    if isinstance(exc, (ValueError, RuntimeError)):
+                        st.error(str(exc))
+                    else:
+                        st.error(f"Gemini could not generate the draft ({type(exc).__name__}). Check your API key, model access, internet connection, and quota. Manual Project Planner remains available.")
+
+        custom_draft = st.session_state.get("custom_ai_draft")
+        if custom_draft:
+            st.divider()
+            st.markdown(f"### Review draft: {custom_draft.get('title', 'Custom project')}")
+            st.caption(f"Primary material: {custom_draft.get('material', 'Wood')} · These are AI-generated estimates, not certified build dimensions.")
+            if custom_draft.get("assumptions"):
+                st.markdown("**AI assumptions**")
+                for note in custom_draft["assumptions"]:
+                    st.write(f"- {note}")
+            edited_custom_parts = []
+            for idx, part in enumerate(custom_draft["parts"]):
+                st.markdown(f"**Part {idx + 1}: {part['name']}**")
+                ca, cb, cc, cd, ce = st.columns([2, 1.2, 1.2, 1.1, 0.8])
+                with ca:
+                    part_name = st.text_input("Part name", value=part["name"], key=f"custom_ai_name_{part['id']}")
+                with cb:
+                    part_length = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"custom_ai_len_{part['id']}")
+                with cc:
+                    part_width = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"custom_ai_wid_{part['id']}")
+                with cd:
+                    part_thickness = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"custom_ai_thick_{part['id']}")
+                with ce:
+                    part_quantity = st.number_input("Quantity", min_value=1, max_value=20, value=int(part.get("quantity", 1)), step=1, key=f"custom_ai_qty_{part['id']}")
+                if part.get("reason"):
+                    st.caption(part["reason"])
+                edited_custom_parts.append({
+                    "id": part["id"], "name": part_name.strip() or f"Part {idx + 1}",
+                    "length": int(part_length), "width": int(part_width),
+                    "thickness": int(part_thickness), "quantity": int(part_quantity),
+                })
+
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                custom_pickup_area = st.text_input("Pickup area (optional)", key="custom_ai_pickup_area", placeholder="e.g. Guindy, Chennai")
+            with cc2:
+                custom_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, step=1, key="custom_ai_allowance")
+
+            physical_piece_count = sum(int(part["quantity"]) for part in edited_custom_parts)
+            if physical_piece_count > 30:
+                st.warning("This draft currently requires more than 30 individual pieces. Reduce the quantities before matching.")
+
+            expanded_custom_parts = expand_part_quantities(edited_custom_parts)
+            estimate_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
+            if custom_pickup_area.strip():
+                area_query = custom_pickup_area.strip().casefold()
+                estimate_inventory = [item for item in estimate_inventory if area_query in (
+                    str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold()
+                )]
+            cost_rows, custom_new_estimate, custom_scrap_estimate = project_cost_summary(
+                expanded_custom_parts, estimate_inventory, custom_draft["material"], int(custom_allowance)
+            )
+            st.markdown("### Cost estimate")
+            st.caption("Rough prototype estimate from sample inventory prices, not a live supplier quote. The new-material figure is area-based; the scrap figure counts each whole physical offcut used once. Labour, transport and blade kerf are not included.")
+            st.write(f"**Estimated new-material equivalent:** ₹{custom_new_estimate:,} · **Whole-offcut scrap estimate:** ₹{custom_scrap_estimate:,}")
+            st.dataframe(
+                [{"Part requirement": r["part"], "New-material estimate (₹)": r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows],
+                use_container_width=True, hide_index=True
+            )
+
+            if st.button("Add another part", key="custom_ai_add_part"):
+                if len(edited_custom_parts) >= 10:
+                    st.warning("A custom draft can contain up to 10 distinct part types.")
+                else:
+                    draft_copy = dict(custom_draft)
+                    draft_copy["parts"] = edited_custom_parts + [{
+                        "id": uuid.uuid4().hex[:10], "name": f"Additional part {len(edited_custom_parts) + 1}",
+                        "length": 200, "width": 100, "thickness": 18 if custom_draft["material"] == "Wood" else 3,
+                        "quantity": 1, "reason": "Added by the user; adjust dimensions to suit your design."
+                    }]
+                    st.session_state["custom_ai_draft"] = draft_copy
+                    st.session_state.pop("custom_ai_match_results", None)
+                    st.session_state.pop("custom_ai_match_signature", None)
+                    st.rerun()
+
+            if edited_custom_parts and st.button("Remove a part…", key="custom_ai_toggle_remove"):
+                st.session_state["custom_ai_remove_mode"] = not st.session_state.get("custom_ai_remove_mode", False)
+                st.rerun()
+            if st.session_state.get("custom_ai_remove_mode", False) and edited_custom_parts:
+                remove_index = st.selectbox(
+                    "Choose the part to remove", options=list(range(len(edited_custom_parts))),
+                    format_func=lambda i: f"{i + 1}. {edited_custom_parts[i]['name']}",
+                    key="custom_ai_remove_index",
+                )
+                if st.button("Confirm remove part", key="custom_ai_confirm_remove"):
+                    if len(edited_custom_parts) <= 1:
+                        st.warning("Keep at least one part in the draft.")
+                    else:
+                        draft_copy = dict(custom_draft)
+                        draft_copy["parts"] = edited_custom_parts[:remove_index] + edited_custom_parts[remove_index + 1:]
+                        st.session_state["custom_ai_draft"] = draft_copy
+                        st.session_state["custom_ai_remove_mode"] = False
+                        st.session_state.pop("custom_ai_match_results", None)
+                        st.session_state.pop("custom_ai_match_signature", None)
+                        st.rerun()
+
+            custom_signature = json.dumps({
+                "material": custom_draft["material"], "parts": expanded_custom_parts,
+                "area": custom_pickup_area.strip().casefold(), "allowance": int(custom_allowance)
+            }, sort_keys=True)
+            if st.button("Find matching scrap for this custom project", type="primary", key="custom_ai_match", use_container_width=True):
+                if not any(part["name"].strip() for part in edited_custom_parts):
+                    st.warning("Add a name for at least one part.")
+                elif physical_piece_count > 30:
+                    st.warning("Reduce the total quantity to 30 pieces or fewer before matching.")
+                else:
+                    custom_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
+                    if custom_pickup_area.strip():
+                        q = custom_pickup_area.strip().casefold()
+                        custom_inventory = [item for item in custom_inventory if q in (str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold())]
+                    custom_matches = allocate_project_parts(
+                        custom_draft["material"], expanded_custom_parts, custom_inventory,
+                        allowance_per_side=int(custom_allowance),
+                    )
+                    st.session_state["custom_ai_match_results"] = custom_matches
+                    st.session_state["custom_ai_match_signature"] = custom_signature
+
+            if st.session_state.get("custom_ai_match_signature") == custom_signature:
+                custom_matches = st.session_state.get("custom_ai_match_results", [])
+                assigned_custom = [(part, pieces[0]) for part, pieces in custom_matches if pieces]
+                missing_custom = [part for part, pieces in custom_matches if not pieces]
+                st.markdown("### Matching results")
+                st.info(f"{len(assigned_custom)} of {len(custom_matches)} required pieces are assigned. Multiple parts may be cut from the same physical offcut when the simple layout fits; its listing price is counted only once. Rotation is allowed, and the planner includes {int(custom_allowance)} mm allowance on every edge. This is a heuristic cut plan, not an industrial nesting guarantee.")
+                if assigned_custom:
+                    shown_cut_units = {}
+                    for required_part, piece in assigned_custom:
+                        unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
+                        if unit_key in shown_cut_units:
+                            st.write(f"- **{required_part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
+                        else:
+                            shown_cut_units[unit_key] = required_part["name"]
+                            extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != required_part["name"]]
+                            suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
+                            st.write(f"- **{required_part['name']}** → **{piece.get('name', 'Offcut')}** — {piece.get('length')} × {piece.get('width')} × {piece.get('thickness')} mm, ₹{piece.get('price', 0)} · {piece.get('area', 'Pickup area not provided')}{suffix}")
+                if missing_custom:
+                    st.warning("No suitable offcut was assigned to: " + ", ".join(part["name"] for part in missing_custom) + ". Try changing dimensions, quantity or pickup area.")
+                elif assigned_custom:
+                    st.success("All required pieces have a matching offcut in the current inventory.")
+
+            if custom_draft.get("design_notes"):
+                st.markdown("**Review before building**")
+                for note in custom_draft["design_notes"]:
+                    st.write(f"- {note}")
+            st.caption("AI drafts are suggestions only. Verify dimensions, material grade, stability, joinery, tooling and safe construction with a qualified person where appropriate.")
+
+    st.divider()
+    st.subheader("Standard project ideas")
     idea_filter = st.selectbox("What do you have or want to make?", ["Any material", "Wood", "Metal"])
     ideas = [
         {"title": "Wall shelf", "material": "Wood", "difficulty": "Beginner", "parts": "2 side supports, 1 shelf panel", "tools": "Saw, drill, screws, measuring tape", "time": "2–4 hours", "description": "A small shelf for books, tools or everyday items."},
@@ -1346,6 +2046,13 @@ if page == "Project Ideas":
         {"title": "Small planter stand", "material": "Wood", "difficulty": "Beginner", "parts": "Top panel, four legs, braces", "tools": "Saw, drill, screws, sandpaper", "time": "2–4 hours", "description": "A simple stand for a small plant pot."},
         {"title": "Metal parts tray", "material": "Metal", "difficulty": "Intermediate", "parts": "Base sheet, side strips", "tools": "Metal shears or suitable workshop tools; gloves and eye protection", "time": "2–4 hours", "description": "A shallow tray for storing small parts."},
     ]
+    idea_parts = {
+        "Wall shelf": [{"name":"Shelf panel", "length":600, "width":250, "thickness":18, "quantity":1}, {"name":"Side support 1", "length":250, "width":150, "thickness":18, "quantity":1}, {"name":"Side support 2", "length":250, "width":150, "thickness":18, "quantity":1}],
+        "Desk organiser": [{"name":"Base panel", "length":300, "width":180, "thickness":12, "quantity":1}, {"name":"Divider 1", "length":180, "width":100, "thickness":12, "quantity":1}, {"name":"Divider 2", "length":180, "width":100, "thickness":12, "quantity":1}],
+        "Metal tool stand": [{"name":"Base plate", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Support 1", "length":250, "width":50, "thickness":3, "quantity":1}, {"name":"Support 2", "length":250, "width":50, "thickness":3, "quantity":1}],
+        "Small planter stand": [{"name":"Top panel", "length":300, "width":300, "thickness":18, "quantity":1}, {"name":"Leg 1", "length":300, "width":40, "thickness":18, "quantity":1}, {"name":"Leg 2", "length":300, "width":40, "thickness":18, "quantity":1}],
+        "Metal parts tray": [{"name":"Base sheet", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Side strip 1", "length":300, "width":40, "thickness":3, "quantity":1}, {"name":"Side strip 2", "length":200, "width":40, "thickness":3, "quantity":1}],
+    }
     shown = [i for i in ideas if idea_filter == "Any material" or i["material"] == idea_filter]
     for idea in shown:
         with st.container(border=True):
@@ -1359,8 +2066,66 @@ if page == "Project Ideas":
                 st.write(idea["description"])
                 st.write(f"**Suggested parts:** {idea['parts']}")
                 st.write(f"**Tools:** {idea['tools']}")
-                st.button("Find materials for this idea", key=f"idea_{idea['title']}", on_click=navigate_to, args=("Find Scrap",))
-    st.info("AI-generated ideas are not connected in this prototype. These sample ideas demonstrate how the feature could work; check dimensions, stability and safe construction before building.")
+                if st.button("Review and customise project", key=f"idea_{idea['title']}"):
+                    st.session_state.selected_idea = idea["title"]
+                    st.session_state.idea_draft_parts = [x.copy() for x in idea_parts[idea["title"]]]
+    if st.session_state.get("selected_idea"):
+        selected_title = st.session_state.selected_idea
+        selected_idea = next((x for x in ideas if x["title"] == selected_title), None)
+        if selected_idea:
+            st.divider()
+            st.subheader(f"Review project draft: {selected_title}")
+            st.caption("Edit each part's dimensions and quantity before searching. Dimensions are starter estimates, not a certified design.")
+            draft_material = selected_idea["material"]
+            edited_parts = []
+            for idx, part in enumerate(st.session_state.idea_draft_parts):
+                st.markdown(f"**{part['name']}**")
+                a,b,c,d,e = st.columns(5)
+                with a: pname = st.text_input("Part name", value=part["name"], key=f"idea_name_{selected_title}_{idx}")
+                with b: plen = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"idea_len_{selected_title}_{idx}")
+                with c: pwid = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"idea_wid_{selected_title}_{idx}")
+                with d: pthick = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"idea_thick_{selected_title}_{idx}")
+                with e: pqty = st.number_input("Quantity", min_value=1, max_value=100, value=int(part.get("quantity", 1)), step=1, key=f"idea_qty_{selected_title}_{idx}")
+                edited_parts.append({"name":pname, "length":int(plen), "width":int(pwid), "thickness":int(pthick), "quantity":int(pqty)})
+            idea_area = st.text_input("Pickup place (optional)", key=f"idea_area_{selected_title}", placeholder="e.g. Guindy, Chennai")
+            idea_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, key=f"idea_allowance_{selected_title}")
+            cost_rows, new_est, scrap_est = project_cost_summary(edited_parts, inventory, draft_material, int(idea_allowance))
+            st.markdown("### Cost estimate")
+            st.caption("Rough prototype estimate from sample listing prices, not a live supplier quote. New-material cost is an area-based proxy; each whole offcut used is counted once. Labour, transport and blade kerf are excluded.")
+            st.write(f"**Estimated new-material equivalent:** ₹{new_est:,} · **Whole-offcut scrap estimate:** ₹{scrap_est:,}")
+            st.dataframe([{"Part":r["part"], "New material estimate (₹)":r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows], use_container_width=True, hide_index=True)
+            if st.button("Find matching scrap for this project", type="primary", key=f"idea_find_{selected_title}"):
+                idea_inventory = [x for x in inventory if x.get("status", "Available") == "Available"]
+                if idea_area.strip():
+                    q = idea_area.strip().casefold()
+                    idea_inventory = [x for x in idea_inventory if q in (str(x.get("area", "")).casefold()+" "+str(x.get("pickup_location", "")).casefold())]
+                matches = allocate_project_parts(draft_material, edited_parts, idea_inventory, allowance_per_side=int(idea_allowance))
+                st.session_state.idea_match_results = matches
+                st.session_state.idea_match_title = selected_title
+            if st.session_state.get("idea_match_title") == selected_title:
+                matches = st.session_state.get("idea_match_results", [])
+                found = [(part, pieces[0]) for part, pieces in matches if pieces]
+                missing = [part for part, pieces in matches if not pieces]
+                st.subheader("Matching materials")
+                if found:
+                    st.caption("Several parts can share one offcut when the simple cutting layout permits it; the offcut price is counted once in the project estimate.")
+                    shown_cut_units = {}
+                    for part, piece in found:
+                        unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
+                        if unit_key in shown_cut_units:
+                            st.write(f"- **{part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
+                        else:
+                            shown_cut_units[unit_key] = part["name"]
+                            extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != part["name"]]
+                            suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
+                            st.write(f"- **{part['name']}** → {piece['name']} ({piece['length']} × {piece['width']} × {piece['thickness']} mm), ₹{piece.get('price',0)} · {piece.get('area','Pickup area not provided')}{suffix}")
+                if missing:
+                    st.warning("No matching material was found for: " + ", ".join(x["name"] for x in missing) + ". Try changing dimensions, material, or pickup area.")
+                elif not found:
+                    st.warning("No matching materials found. Try changing dimensions or checking the inventory.")
+                else:
+                    st.success(f"Matched {len(found)} of {len(matches)} part requirements. Unmatched parts are listed above if any.")
+    st.info("These sample project ideas are starter drafts. Check dimensions, stability and safe construction before building.")
 
 
 # -------------------- SAVE FOR LATER --------------------
@@ -1372,6 +2137,9 @@ if page == "Save for Later":
     if not saved_items:
         st.info("You haven't saved any materials yet. Open Find Scrap and select Save for Later on a listing.")
     else:
+        saved_total = sum(int(p.get("price", 0) or 0) for p in saved_items)
+        st.metric("Total price of saved listings (one piece each)", f"₹{saved_total:,}")
+        st.caption("This is the total of saved listing prices, not a complete project estimate.")
         for piece in saved_items:
             with st.container(border=True):
                 photo_col, a, b, c = st.columns([1.2, 2.5, 2, 1])
