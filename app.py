@@ -255,9 +255,75 @@ st.markdown("""
     .stTextInput input,
     .stNumberInput input,
     .stTextArea textarea,
+    [data-baseweb="input"] input,
+    [data-baseweb="textarea"] textarea,
     [data-baseweb="select"] > div {
         border-radius: 9px;
         border-color: #D8E1D8;
+    }
+
+    /* Keep typed text legible in the app's default light design. */
+    .stTextInput input,
+    .stNumberInput input,
+    .stTextArea textarea,
+    [data-baseweb="input"] input,
+    [data-baseweb="textarea"] textarea {
+        color: #202B26 !important;
+        -webkit-text-fill-color: #202B26 !important;
+        background-color: #FFFFFF !important;
+        caret-color: #215747 !important;
+        opacity: 1 !important;
+    }
+
+    .stTextInput input::placeholder,
+    .stNumberInput input::placeholder,
+    .stTextArea textarea::placeholder,
+    [data-baseweb="input"] input::placeholder,
+    [data-baseweb="textarea"] textarea::placeholder {
+        color: #718078 !important;
+        -webkit-text-fill-color: #718078 !important;
+        opacity: 1 !important;
+    }
+
+    /* Streamlit can inherit dark-theme widget styles even though ScrapFit uses
+       a light green page design. Explicit dark-mode widget colours prevent
+       typed values and selected dropdown text from disappearing. */
+    [data-theme="dark"] .stTextInput input,
+    [data-theme="dark"] .stNumberInput input,
+    [data-theme="dark"] .stTextArea textarea,
+    [data-theme="dark"] [data-baseweb="input"] input,
+    [data-theme="dark"] [data-baseweb="textarea"] textarea {
+        color: #F3F7F4 !important;
+        -webkit-text-fill-color: #F3F7F4 !important;
+        background-color: #202B26 !important;
+        border-color: #60756A !important;
+        caret-color: #B8E3C5 !important;
+    }
+
+    [data-theme="dark"] .stTextInput input::placeholder,
+    [data-theme="dark"] .stNumberInput input::placeholder,
+    [data-theme="dark"] .stTextArea textarea::placeholder,
+    [data-theme="dark"] [data-baseweb="input"] input::placeholder,
+    [data-theme="dark"] [data-baseweb="textarea"] textarea::placeholder {
+        color: #BAC8BF !important;
+        -webkit-text-fill-color: #BAC8BF !important;
+        opacity: 1 !important;
+    }
+
+    [data-theme="dark"] [data-baseweb="select"] [role="combobox"],
+    [data-theme="dark"] [data-baseweb="select"] [role="combobox"] *,
+    [data-theme="dark"] [data-baseweb="select"] > div {
+        color: #F3F7F4 !important;
+        -webkit-text-fill-color: #F3F7F4 !important;
+        background-color: #202B26 !important;
+        border-color: #60756A !important;
+    }
+
+    [data-theme="dark"] [data-baseweb="menu"],
+    [data-theme="dark"] [role="listbox"],
+    [data-theme="dark"] [role="option"] {
+        color: #F3F7F4 !important;
+        background-color: #202B26 !important;
     }
 
     [data-baseweb="tab-list"] {
