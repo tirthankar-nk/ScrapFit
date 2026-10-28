@@ -367,42 +367,62 @@ st.markdown("""
         background: #DDE9DE;
     }
 
-    /* Keep the sidebar open/close arrow visible on mobile and desktop. */
+    /* High-contrast sidebar toggle: target Streamlit's collapsed control and
+       header-labelled sidebar buttons across Streamlit DOM/theme variations. */
     [data-testid="stSidebarCollapseButton"],
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="stSidebarCollapseButton"] button,
-    [data-testid="stSidebarCollapsedControl"] button {
+    [data-testid="stSidebarCollapsedControl"] button,
+    button[data-testid="stSidebarCollapseButton"],
+    button[data-testid="stSidebarCollapsedControl"],
+    [data-testid="stHeader"] button[aria-label*="sidebar" i],
+    [data-testid="stHeader"] button[title*="sidebar" i] {
         color: #173F34 !important;
-        background: #D8EBDD !important;
-        border: 1px solid #47745B !important;
+        background: #B8E3C5 !important;
+        border: 2px solid #215747 !important;
         border-radius: 10px !important;
         opacity: 1 !important;
-        box-shadow: 0 1px 4px rgba(23, 63, 52, 0.14) !important;
+        visibility: visible !important;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.20) !important;
+        min-width: 40px !important;
+        min-height: 40px !important;
     }
 
     [data-testid="stSidebarCollapseButton"] svg,
     [data-testid="stSidebarCollapsedControl"] svg,
     [data-testid="stSidebarCollapseButton"] button svg,
-    [data-testid="stSidebarCollapsedControl"] button svg {
+    [data-testid="stSidebarCollapsedControl"] button svg,
+    button[data-testid="stSidebarCollapseButton"] svg,
+    button[data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="stHeader"] button[aria-label*="sidebar" i] svg,
+    [data-testid="stHeader"] button[title*="sidebar" i] svg,
+    [data-testid="stSidebarCollapseButton"] svg *,
+    [data-testid="stSidebarCollapsedControl"] svg * {
         color: #173F34 !important;
         stroke: #173F34 !important;
         fill: #173F34 !important;
         opacity: 1 !important;
+        visibility: visible !important;
     }
 
+    /* Keep the same high contrast in both light and dark Streamlit themes. */
     [data-theme="dark"] [data-testid="stSidebarCollapseButton"],
     [data-theme="dark"] [data-testid="stSidebarCollapsedControl"],
     [data-theme="dark"] [data-testid="stSidebarCollapseButton"] button,
-    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] button {
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] button,
+    [data-theme="dark"] [data-testid="stHeader"] button[aria-label*="sidebar" i],
+    [data-theme="dark"] [data-testid="stHeader"] button[title*="sidebar" i] {
         color: #173F34 !important;
         background: #B8E3C5 !important;
-        border-color: #B8E3C5 !important;
+        border-color: #215747 !important;
     }
 
     [data-theme="dark"] [data-testid="stSidebarCollapseButton"] svg,
     [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] svg,
-    [data-theme="dark"] [data-testid="stSidebarCollapseButton"] button svg,
-    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] button svg {
+    [data-theme="dark"] [data-testid="stHeader"] button[aria-label*="sidebar" i] svg,
+    [data-theme="dark"] [data-testid="stHeader"] button[title*="sidebar" i] svg,
+    [data-theme="dark"] [data-testid="stSidebarCollapseButton"] svg *,
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] svg * {
         color: #173F34 !important;
         stroke: #173F34 !important;
         fill: #173F34 !important;
