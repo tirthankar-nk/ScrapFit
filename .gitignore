@@ -1,0 +1,8 @@
+# Private Streamlit credentials - never commit
+.streamlit/secrets.toml
+
+# Local Python environments
+.venv/
+.venv313/
+__pycache__/
+*.py[cod]
