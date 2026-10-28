@@ -965,10 +965,10 @@ if page == "Home":
             st.markdown('<div class="sf-eyebrow">♻ Project-based matching for reusable materials</div>', unsafe_allow_html=True)
             st.markdown('<div class="sf-hero-title">Good materials deserve a second life.</div>', unsafe_allow_html=True)
             st.markdown(
-                '<div class="sf-hero-copy">Usable wood and metal offcuts can still be valuable. ScrapFit helps people compare leftover pieces with project requirements, prioritise suitable smaller offcuts, and explore local pickup options before buying new material.</div>',
+                '<div class="sf-hero-copy">ScrapFit helps people find a next use for leftover wood and metal. Describe the parts a project needs, compare them with available offcuts, and explore local pickup options before buying new material.</div>',
                 unsafe_allow_html=True,
             )
-            st.markdown('<div class="sf-hero-kicker">Project-first matching · Quality-aware listings · Local pickup</div>', unsafe_allow_html=True)
+            st.markdown('<div class="sf-hero-kicker">Project-first matching · Cutting-plan assistance · Local reuse</div>', unsafe_allow_html=True)
         with hero_art:
             hero_image = Path(__file__).with_name("scrapfit_hero_photo.png")
             if hero_image.exists():
@@ -977,7 +977,7 @@ if page == "Home":
                 st.warning("Place scrapfit_hero_photo.png beside app.py to display the workshop photo.")
 
         st.markdown("### Start with what you need")
-        st.markdown("Find a piece for a specific cut, plan a project from a parts list, or make leftover material available for reuse.")
+        st.markdown("Search for a suitable piece, plan a project from its parts list, or list leftover material for someone else to use.")
         action1, action2, action3 = st.columns(3)
         with action1:
             st.button("⌕  Find Scrap", key="home_find_materials", use_container_width=True,
@@ -990,65 +990,66 @@ if page == "Home":
                       on_click=navigate_to, args=("List Scrap",))
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">Your material workspace</div><div class="sf-section-title">A clearer view of reusable resources</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-copy">These counts reflect the local prototype inventory currently loaded on this device. The listings are sample data for demonstration, not verified live offers.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">Material workspace</div><div class="sf-section-title">See what is available to explore</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-copy">These figures describe the demo inventory loaded by this app. Sample listings are used to demonstrate the workflow; they are not verified live offers from real sellers.</div>', unsafe_allow_html=True)
     total_pieces = len(inventory)
     wood_pieces = sum(p.get("material") == "Wood" for p in inventory)
     metal_pieces = sum(p.get("material") == "Metal" for p in inventory)
     metric1, metric2, metric3 = st.columns(3)
-    metric1.metric("Inventory listings", total_pieces, help="Number of individual listing records, not total quantity of pieces.")
+    metric1.metric("Demo listings", total_pieces, help="Number of listing records in the demo inventory, not the total quantity of physical pieces.")
     metric2.metric("Wood listings", wood_pieces)
     metric3.metric("Metal listings", metal_pieces)
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">Why ScrapFit</div><div class="sf-section-title">The problem is finding the right leftover</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-copy">Usable offcuts may be discarded, sold cheaply, or sent for recycling before anyone finds a practical use for them. At the same time, small businesses, students, makers, and repair providers may need only a small quantity of material. ScrapFit is designed to make those needs easier to connect.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">Why ScrapFit</div><div class="sf-section-title">The hard part is finding the right leftover</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-copy">A usable offcut can be difficult to discover when leftover materials are stored without searchable dimensions. Meanwhile, a maker or workshop may need only one or two pieces—not a full board or sheet. ScrapFit is designed to connect those two sides through project requirements and clearer listing details.</div>', unsafe_allow_html=True)
     c1, c2, c3 = st.columns(3)
     with c1:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌕</div><h3>Search by project needs</h3><p>Start with the dimensions and material you need instead of browsing a pile of unrelated leftovers.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌕</div><h3>Search for a fit</h3><p>Filter by material, dimensions, thickness and pickup area to find offcuts that could meet a part requirement.</p></div>', unsafe_allow_html=True)
     with c2:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">▤</div><h3>Prefer the smallest suitable piece</h3><p>The matching logic ranks pieces that fit, prioritising the smaller suitable offcut so larger pieces may remain available for future projects.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">▤</div><h3>Plan more than one part</h3><p>Enter the parts a project needs. ScrapFit checks suitable pieces and can try grouping multiple parts onto the same offcut using a prototype cutting-layout heuristic.</p></div>', unsafe_allow_html=True)
     with c3:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌖</div><h3>Keep reuse local</h3><p>Pickup-area details help people narrow the search and contact a seller to discuss availability and collection.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌖</div><h3>Keep reuse local</h3><p>Pickup-area details and approximate map locations help people explore nearby options and contact the listing owner to confirm the details.</p></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">How it works</div><div class="sf-section-title">From leftover material to a useful project</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-copy">ScrapFit brings together material details and project requirements in a simple workflow.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">How it works</div><div class="sf-section-title">From a project idea to a possible offcut</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-copy">The app keeps project suggestions and material-fit decisions separate: AI can help draft a parts list, while ScrapFit’s matching rules check the requirements against the inventory.</div>', unsafe_allow_html=True)
     step1, step2, step3 = st.columns(3)
     with step1:
-        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 01</div><h3>List or describe</h3><p>Sellers record material type, dimensions, thickness, condition, price, quantity, and pickup details. Buyers enter a part requirement or a project cut list.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 01</div><h3>List or describe</h3><p>A listing records material, dimensions, thickness, condition, price, quantity and pickup details. A buyer enters an individual part or a project cut list; Custom Project can generate an editable AI draft.</p></div>', unsafe_allow_html=True)
     with step2:
-        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 02</div><h3>Check the fit</h3><p>Python-based rules compare material, thickness, dimensions, and cutting allowance, then rank the suitable listings by fit.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 02</div><h3>Check dimensions and quantity</h3><p>Rule-based matching checks the required material and dimensions, includes the configured cutting allowance, and ranks suitable available offcuts. The cutting layout is a prototype estimate, not a factory-validated nesting plan.</p></div>', unsafe_allow_html=True)
     with step3:
-        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 03</div><h3>Review and arrange pickup</h3><p>Review the listing details, verify the actual material with the seller, and arrange local collection directly.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-step"><div class="sf-step-num">STEP 03</div><h3>Review and arrange pickup</h3><p>Compare the match and rough cost estimates, inspect the listing details, and contact the seller to confirm the actual material, availability, price and collection.</p></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">Who can benefit</div><div class="sf-section-title">Useful for more than one kind of maker</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">Who it can help</div><div class="sf-section-title">Small quantities, practical projects</div>', unsafe_allow_html=True)
     b1, b2, b3, b4 = st.columns(4)
     with b1:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">⚙</div><h3>Workshops</h3><p>Give usable metal and wood leftovers another chance to be used and potentially recover some value.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">⚙</div><h3>Workshops</h3><p>Make reusable wood and metal leftovers easier to list and potentially recover value from.</p></div>', unsafe_allow_html=True)
     with b2:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">▦</div><h3>Small businesses</h3><p>Look for smaller quantities of material that fit a job without automatically buying a full sheet or board.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">▦</div><h3>Small businesses</h3><p>Look for smaller quantities that fit a job without automatically buying a full sheet or board.</p></div>', unsafe_allow_html=True)
     with b3:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">✎</div><h3>Students and makers</h3><p>Explore affordable material options for prototypes, creative builds, and practical projects.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">✎</div><h3>Makers and students</h3><p>Explore material options for prototypes, creative builds and practical projects.</p></div>', unsafe_allow_html=True)
     with b4:
-        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌁</div><h3>Repair providers</h3><p>Find reusable pieces for small repairs where an offcut may be enough for the required part.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><div class="sf-card-icon">⌁</div><h3>Repair providers</h3><p>Find a usable piece for small repairs where an offcut may be enough.</p></div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">Circular value</div><div class="sf-section-title">Keep useful materials in circulation</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-copy">The idea is simple: connect a material that is no longer needed in one place with a project that can use it somewhere nearby.</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-flow"><span>Workshop leftovers</span><b>→</b><span>ScrapFit matching</span><b>→</b><span>Local maker or business</span><b>→</b><span>Useful new product</span></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-callout"><strong>Our mission</strong><br>Encourage the reuse of available materials by making them easier to find and access before purchasing new resources. ScrapFit aims to make local material reuse more practical through project-based matching and clearer listing details.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">Circular value</div><div class="sf-section-title">Keep useful material in circulation</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-copy">When an unused piece meets a real project requirement, material that might otherwise sit in storage or be discarded can continue to be useful.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-flow"><span>Workshop leftovers</span><b>→</b><span>Project-based matching</span><b>→</b><span>Local collection</span><b>→</b><span>Useful new product</span></div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-callout"><strong>Our aim</strong><br>Make reuse a practical option by making leftover materials easier to describe, compare and discover before new material is purchased. ScrapFit starts with wood and metal, local pickup and a straightforward matching workflow.</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="sf-divider"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="sf-section-kicker">Built as a practical prototype</div><div class="sf-section-title">Start simple. Learn from real use.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-kicker">Current build and next steps</div><div class="sf-section-title">A working prototype with room to grow</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sf-section-copy">The current app demonstrates the core workflow with sample inventory. The next improvements focus on making listings more dependable, cutting plans more useful and participation easier to scale.</div>', unsafe_allow_html=True)
     left, right = st.columns(2, gap="large")
     with left:
-        st.markdown('<div class="sf-card"><h3>Available in this prototype</h3><p>• Browse sample wood and metal listings<br>• Search by dimensions and thickness<br>• Filter by pickup area<br>• Plan a project using a manual cut list<br>• Generate an AI-assisted draft parts list in Custom Project (requires Gemini API setup)<br>• Upload listing photos (saved locally on this computer)<br>• View approximate pickup locations on the map<br>• Save listings temporarily for later<br>• Contact a seller using the available contact details</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><h3>Available in this prototype</h3><p>• Browse sample wood and metal listings<br>• Filter by pickup area or search by dimensions and thickness<br>• Create a manual project cut list and set quantity for each part<br>• Generate and edit an AI-assisted draft parts list in Custom Project<br>• Match requirements against the inventory using rules<br>• View a prototype cutting plan and rough cost estimates<br>• View approximate pickup locations on a map<br>• Save listings temporarily and contact a seller using the listed details</p><p class="sf-footnote">Listing changes and uploaded photos are not yet backed by a shared permanent database; demo inventory and locations should be treated as illustrative.</p></div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="sf-card"><h3>Possible next steps</h3><p>• QR-based material records<br>• More detailed quality and availability management<br>• A shared online database and cloud photo storage for wider participation</p><p class="sf-footnote">These are proposed future features, not all active in the current local demo.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><h3>Planned enhancements</h3><p><strong>More reliable listings</strong><br>Verified workshop profiles, clearer condition grades and availability updates.<br><br><strong>Traceable inventory</strong><br>QR codes that open an individual offcut record and help workshops track stock.<br><br><strong>Smarter cutting plans</strong><br>Improve layout optimisation and account for blade kerf, grain direction and usable defects.<br><br><strong>Broader local reuse</strong><br>Persistent cloud inventory and photo storage, more material types, and ways to group nearby pickups.<br><br><strong>Sustainable business model</strong><br>Explore clearly labelled promoted shop listings or advertising; consider transaction commissions only when completed sales can be tracked reliably.</p><p class="sf-footnote">These are roadmap ideas, not features currently offered by the prototype.</p></div>', unsafe_allow_html=True)
 
-    st.markdown('<p class="sf-footnote">Demo notice: this is a local prototype using sample inventory. Pickup areas and any illustrative visuals are not proof of a real listing or verified location. Always confirm dimensions, material grade, condition, price, availability, and collection arrangements with the seller before making a decision.</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sf-footnote">Demo notice: sample listing details and approximate pickup locations are for demonstration and are not verified offers. Illustrative material photographs may not show the exact item listed. Before purchasing or building, confirm actual dimensions, material grade, condition, price, availability and collection with the seller. AI-generated part lists and cutting plans are estimates that require review.</p>', unsafe_allow_html=True)
 
 # -------------------- FIND SCRAP --------------------
 
