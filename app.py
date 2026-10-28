@@ -937,6 +937,11 @@ def navigate_to(target_page):
     st.session_state["main_navigation"] = target_page
 
 
+# Apply deferred navigation before the keyed radio widget is created.
+# Widgets cannot have their own session-state key changed after instantiation.
+if "pending_navigation" in st.session_state:
+    st.session_state["main_navigation"] = st.session_state.pop("pending_navigation")
+
 with st.sidebar:
     st.markdown("## ♻ ScrapFit")
     st.caption("Find the next use for every offcut")
@@ -1403,8 +1408,8 @@ if page == "Project Planner":
     planner_available = [p for p in inventory if p.get("status", "Available") == "Available"]
     st.write(
         "Add the rectangular parts required for a project. ScrapFit leaves a cutting "
-        "allowance, prioritizes the smallest suitable offcuts, and never assigns one "
-        "listing to multiple parts in this project."
+        "allowance and plans multiple parts from one physical offcut when a simple "
+        "cutting layout fits. Set the quantity for repeated parts, such as four table legs."
     )
 
     with st.form("cut_list_form"):
@@ -1425,7 +1430,7 @@ if page == "Project Planner":
         parts = []
         for i in range(int(part_count)):
             st.markdown(f"**Part {i + 1}**")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 0.9])
 
             with c1:
                 part_name = st.text_input(
@@ -1435,7 +1440,7 @@ if page == "Project Planner":
                 )
             with c2:
                 part_length = st.number_input(
-                    "Length",
+                    "Length (mm)",
                     min_value=1,
                     max_value=10000,
                     value=500,
@@ -1444,7 +1449,7 @@ if page == "Project Planner":
                 )
             with c3:
                 part_width = st.number_input(
-                    "Width",
+                    "Width (mm)",
                     min_value=1,
                     max_value=10000,
                     value=250,
@@ -1453,20 +1458,31 @@ if page == "Project Planner":
                 )
             with c4:
                 part_thickness = st.number_input(
-                    "Thickness",
+                    "Thickness (mm)",
                     min_value=1,
                     max_value=500,
                     value=18,
                     step=1,
                     key=f"part_thickness_{i}",
                 )
+            with c5:
+                part_quantity = st.number_input(
+                    "Quantity",
+                    min_value=1,
+                    max_value=30,
+                    value=1,
+                    step=1,
+                    key=f"part_quantity_{i}",
+                    help="How many identical pieces does the project need? For example, a table usually needs 4 legs.",
+                )
 
             parts.append(
                 {
-                    "name": part_name,
+                    "name": part_name.strip() or f"Part {i + 1}",
                     "length": int(part_length),
                     "width": int(part_width),
                     "thickness": int(part_thickness),
+                    "quantity": int(part_quantity),
                 }
             )
 
@@ -1491,16 +1507,25 @@ if page == "Project Planner":
         )
 
     if cut_list_submitted:
-        # Project Planner deliberately uses all available inventory; the optional
-        # listing filters belong only on Find Scrap.
-        planner_inventory = planner_available
-        project_results = allocate_project_parts(
-            project_material, parts, planner_inventory,
-            allowance_per_side=int(project_allowance),
-        )
+        total_required_pieces = sum(int(part.get("quantity", 1)) for part in parts)
+        if total_required_pieces > 30:
+            st.session_state.pop("project_results", None)
+            st.warning("This planner supports up to 30 physical pieces per search. Reduce the quantities and try again.")
+        else:
+            # Project Planner deliberately uses all available inventory; the optional
+            # listing filters belong only on Find Scrap.
+            planner_inventory = planner_available
+            expanded_parts = expand_part_quantities(parts)
+            project_results = allocate_project_parts(
+                project_material, expanded_parts, planner_inventory,
+                allowance_per_side=int(project_allowance),
+            )
 
-        st.session_state.project_results = project_results
-        st.session_state.project_title = project_name
+            st.session_state.project_results = project_results
+            st.session_state.project_title = project_name
+            st.session_state.project_parts = parts
+            st.session_state.project_material_saved = project_material
+            st.session_state.project_allowance_saved = int(project_allowance)
 
     if "project_results" in st.session_state:
         project_results = st.session_state.project_results
@@ -1591,7 +1616,7 @@ if page == "Project Planner":
                     f"{part['thickness']} mm"
                 )
         elif assigned_results:
-            st.success("Every part requirement has a unique offcut assigned.")
+            st.success("Every required piece has been assigned in the current cutting plan.")
 
 
 # -------------------- LIST SCRAP --------------------
@@ -1764,7 +1789,9 @@ if page == "List Scrap":
                     f"Added '{new_piece['name']}' ({new_piece['id']}) to inventory."
                 )
                 st.session_state["reset_listing_form"] = True
-                st.session_state["main_navigation"] = "Inventory"
+                # Defer the navigation value until the next run, before the radio
+                # widget with key="main_navigation" is instantiated.
+                st.session_state["pending_navigation"] = "Inventory"
                 st.rerun()
             except (OSError, TypeError, ValueError) as exc:
                 st.error(
@@ -1854,278 +1881,282 @@ if page == "Project Ideas":
     st.header("💡 Project Ideas")
     st.write("Explore simple ways to give leftover materials a second life. These are starter ideas for a prototype, not certified engineering designs.")
 
-    # AI-powered custom project drafting is deliberately separate from the existing
-    # standard project ideas and manual Project Planner.
-    with st.container(border=True):
-        st.subheader("✨ Custom Project — describe what you want to make")
-        st.write("Describe your idea in everyday language. AI will suggest an editable starter cut list; ScrapFit's existing matching engine will then check available offcuts.")
-        custom_description = st.text_area(
-            "Project description",
-            placeholder="e.g. A compact wooden study table with a top, four legs, and a shelf underneath. It should fit in a small room.",
-            key="custom_ai_description",
-            height=105,
-        )
-        custom_material_choice = st.selectbox(
-            "Primary material for this draft", ["Wood", "Metal"], key="custom_ai_material"
-        )
-        st.caption("Gemini API setup is required for AI generation. The generated dimensions are estimates and must be reviewed before use.")
-        has_ai_key = bool(get_gemini_api_key())
-        if not has_ai_key:
-            st.info("AI is not configured yet. Set GEMINI_API_KEY in .streamlit/secrets.toml or as an environment variable. You can still build a parts list manually in Project Planner.")
-        if st.button("Generate draft parts list with AI", type="primary", key="custom_ai_generate", use_container_width=True):
-            if len(custom_description.strip()) < 10:
-                st.warning("Describe your project in a little more detail before generating a draft.")
-            elif not has_ai_key:
-                st.error("Gemini API key not found. Follow the setup instructions provided with this app, then restart Streamlit.")
-            else:
-                try:
-                    with st.spinner("Generating a starter cut list…"):
-                        draft_payload = generate_ai_project_draft(custom_description, custom_material_choice)
-                    st.session_state["custom_ai_draft"] = draft_payload
-                    st.session_state.pop("custom_ai_match_results", None)
-                    st.session_state.pop("custom_ai_match_signature", None)
-                    st.success("Draft generated. Review every part and edit the dimensions before matching.")
-                except Exception as exc:
-                    # Do not display raw exception text, which can contain request details.
-                    if isinstance(exc, (ValueError, RuntimeError)):
-                        st.error(str(exc))
-                    else:
-                        st.error(f"Gemini could not generate the draft ({type(exc).__name__}). Check your API key, model access, internet connection, and quota. Manual Project Planner remains available.")
+    standard_tab, custom_tab = st.tabs(["Standard Projects", "Custom Project"])
 
-        custom_draft = st.session_state.get("custom_ai_draft")
-        if custom_draft:
-            st.divider()
-            st.markdown(f"### Review draft: {custom_draft.get('title', 'Custom project')}")
-            st.caption(f"Primary material: {custom_draft.get('material', 'Wood')} · These are AI-generated estimates, not certified build dimensions.")
-            if custom_draft.get("assumptions"):
-                st.markdown("**AI assumptions**")
-                for note in custom_draft["assumptions"]:
-                    st.write(f"- {note}")
-            edited_custom_parts = []
-            for idx, part in enumerate(custom_draft["parts"]):
-                st.markdown(f"**Part {idx + 1}: {part['name']}**")
-                ca, cb, cc, cd, ce = st.columns([2, 1.2, 1.2, 1.1, 0.8])
-                with ca:
-                    part_name = st.text_input("Part name", value=part["name"], key=f"custom_ai_name_{part['id']}")
-                with cb:
-                    part_length = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"custom_ai_len_{part['id']}")
-                with cc:
-                    part_width = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"custom_ai_wid_{part['id']}")
-                with cd:
-                    part_thickness = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"custom_ai_thick_{part['id']}")
-                with ce:
-                    part_quantity = st.number_input("Quantity", min_value=1, max_value=20, value=int(part.get("quantity", 1)), step=1, key=f"custom_ai_qty_{part['id']}")
-                if part.get("reason"):
-                    st.caption(part["reason"])
-                edited_custom_parts.append({
-                    "id": part["id"], "name": part_name.strip() or f"Part {idx + 1}",
-                    "length": int(part_length), "width": int(part_width),
-                    "thickness": int(part_thickness), "quantity": int(part_quantity),
-                })
-
-            cc1, cc2 = st.columns(2)
-            with cc1:
-                custom_pickup_area = st.text_input("Pickup area (optional)", key="custom_ai_pickup_area", placeholder="e.g. Guindy, Chennai")
-            with cc2:
-                custom_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, step=1, key="custom_ai_allowance")
-
-            physical_piece_count = sum(int(part["quantity"]) for part in edited_custom_parts)
-            if physical_piece_count > 30:
-                st.warning("This draft currently requires more than 30 individual pieces. Reduce the quantities before matching.")
-
-            expanded_custom_parts = expand_part_quantities(edited_custom_parts)
-            estimate_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
-            if custom_pickup_area.strip():
-                area_query = custom_pickup_area.strip().casefold()
-                estimate_inventory = [item for item in estimate_inventory if area_query in (
-                    str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold()
-                )]
-            cost_rows, custom_new_estimate, custom_scrap_estimate = project_cost_summary(
-                expanded_custom_parts, estimate_inventory, custom_draft["material"], int(custom_allowance)
+    with custom_tab:
+        # AI-powered custom project drafting is deliberately separate from the existing
+        # standard project ideas and manual Project Planner.
+        with st.container(border=True):
+            st.subheader("✨ Custom Project — describe what you want to make")
+            st.write("Describe your idea in everyday language. AI will suggest an editable starter cut list; ScrapFit's existing matching engine will then check available offcuts.")
+            custom_description = st.text_area(
+                "Project description",
+                placeholder="e.g. A compact wooden study table with a top, four legs, and a shelf underneath. It should fit in a small room.",
+                key="custom_ai_description",
+                height=105,
             )
-            st.markdown("### Cost estimate")
-            st.caption("Rough prototype estimate from sample inventory prices, not a live supplier quote. The new-material figure is area-based; the scrap figure counts each whole physical offcut used once. Labour, transport and blade kerf are not included.")
-            st.write(f"**Estimated new-material equivalent:** ₹{custom_new_estimate:,} · **Whole-offcut scrap estimate:** ₹{custom_scrap_estimate:,}")
-            st.dataframe(
-                [{"Part requirement": r["part"], "New-material estimate (₹)": r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows],
-                use_container_width=True, hide_index=True
+            custom_material_choice = st.selectbox(
+                "Primary material for this draft", ["Wood", "Metal"], key="custom_ai_material"
             )
-
-            if st.button("Add another part", key="custom_ai_add_part"):
-                if len(edited_custom_parts) >= 10:
-                    st.warning("A custom draft can contain up to 10 distinct part types.")
+            st.caption("Gemini API setup is required for AI generation. The generated dimensions are estimates and must be reviewed before use.")
+            has_ai_key = bool(get_gemini_api_key())
+            if not has_ai_key:
+                st.info("AI is not configured yet. Set GEMINI_API_KEY in .streamlit/secrets.toml or as an environment variable. You can still build a parts list manually in Project Planner.")
+            if st.button("Generate draft parts list with AI", type="primary", key="custom_ai_generate", use_container_width=True):
+                if len(custom_description.strip()) < 10:
+                    st.warning("Describe your project in a little more detail before generating a draft.")
+                elif not has_ai_key:
+                    st.error("Gemini API key not found. Follow the setup instructions provided with this app, then restart Streamlit.")
                 else:
-                    draft_copy = dict(custom_draft)
-                    draft_copy["parts"] = edited_custom_parts + [{
-                        "id": uuid.uuid4().hex[:10], "name": f"Additional part {len(edited_custom_parts) + 1}",
-                        "length": 200, "width": 100, "thickness": 18 if custom_draft["material"] == "Wood" else 3,
-                        "quantity": 1, "reason": "Added by the user; adjust dimensions to suit your design."
-                    }]
-                    st.session_state["custom_ai_draft"] = draft_copy
-                    st.session_state.pop("custom_ai_match_results", None)
-                    st.session_state.pop("custom_ai_match_signature", None)
-                    st.rerun()
+                    try:
+                        with st.spinner("Generating a starter cut list…"):
+                            draft_payload = generate_ai_project_draft(custom_description, custom_material_choice)
+                        st.session_state["custom_ai_draft"] = draft_payload
+                        st.session_state.pop("custom_ai_match_results", None)
+                        st.session_state.pop("custom_ai_match_signature", None)
+                        st.success("Draft generated. Review every part and edit the dimensions before matching.")
+                    except Exception as exc:
+                        # Do not display raw exception text, which can contain request details.
+                        if isinstance(exc, (ValueError, RuntimeError)):
+                            st.error(str(exc))
+                        else:
+                            st.error(f"Gemini could not generate the draft ({type(exc).__name__}). Check your API key, model access, internet connection, and quota. Manual Project Planner remains available.")
 
-            if edited_custom_parts and st.button("Remove a part…", key="custom_ai_toggle_remove"):
-                st.session_state["custom_ai_remove_mode"] = not st.session_state.get("custom_ai_remove_mode", False)
-                st.rerun()
-            if st.session_state.get("custom_ai_remove_mode", False) and edited_custom_parts:
-                remove_index = st.selectbox(
-                    "Choose the part to remove", options=list(range(len(edited_custom_parts))),
-                    format_func=lambda i: f"{i + 1}. {edited_custom_parts[i]['name']}",
-                    key="custom_ai_remove_index",
+            custom_draft = st.session_state.get("custom_ai_draft")
+            if custom_draft:
+                st.divider()
+                st.markdown(f"### Review draft: {custom_draft.get('title', 'Custom project')}")
+                st.caption(f"Primary material: {custom_draft.get('material', 'Wood')} · These are AI-generated estimates, not certified build dimensions.")
+                if custom_draft.get("assumptions"):
+                    st.markdown("**AI assumptions**")
+                    for note in custom_draft["assumptions"]:
+                        st.write(f"- {note}")
+                edited_custom_parts = []
+                for idx, part in enumerate(custom_draft["parts"]):
+                    st.markdown(f"**Part {idx + 1}: {part['name']}**")
+                    ca, cb, cc, cd, ce = st.columns([2, 1.2, 1.2, 1.1, 0.8])
+                    with ca:
+                        part_name = st.text_input("Part name", value=part["name"], key=f"custom_ai_name_{part['id']}")
+                    with cb:
+                        part_length = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"custom_ai_len_{part['id']}")
+                    with cc:
+                        part_width = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"custom_ai_wid_{part['id']}")
+                    with cd:
+                        part_thickness = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"custom_ai_thick_{part['id']}")
+                    with ce:
+                        part_quantity = st.number_input("Quantity", min_value=1, max_value=20, value=int(part.get("quantity", 1)), step=1, key=f"custom_ai_qty_{part['id']}")
+                    if part.get("reason"):
+                        st.caption(part["reason"])
+                    edited_custom_parts.append({
+                        "id": part["id"], "name": part_name.strip() or f"Part {idx + 1}",
+                        "length": int(part_length), "width": int(part_width),
+                        "thickness": int(part_thickness), "quantity": int(part_quantity),
+                    })
+
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    custom_pickup_area = st.text_input("Pickup area (optional)", key="custom_ai_pickup_area", placeholder="e.g. Guindy, Chennai")
+                with cc2:
+                    custom_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, step=1, key="custom_ai_allowance")
+
+                physical_piece_count = sum(int(part["quantity"]) for part in edited_custom_parts)
+                if physical_piece_count > 30:
+                    st.warning("This draft currently requires more than 30 individual pieces. Reduce the quantities before matching.")
+
+                expanded_custom_parts = expand_part_quantities(edited_custom_parts)
+                estimate_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
+                if custom_pickup_area.strip():
+                    area_query = custom_pickup_area.strip().casefold()
+                    estimate_inventory = [item for item in estimate_inventory if area_query in (
+                        str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold()
+                    )]
+                cost_rows, custom_new_estimate, custom_scrap_estimate = project_cost_summary(
+                    expanded_custom_parts, estimate_inventory, custom_draft["material"], int(custom_allowance)
                 )
-                if st.button("Confirm remove part", key="custom_ai_confirm_remove"):
-                    if len(edited_custom_parts) <= 1:
-                        st.warning("Keep at least one part in the draft.")
+                st.markdown("### Cost estimate")
+                st.caption("Rough prototype estimate from sample inventory prices, not a live supplier quote. The new-material figure is area-based; the scrap figure counts each whole physical offcut used once. Labour, transport and blade kerf are not included.")
+                st.write(f"**Estimated new-material equivalent:** ₹{custom_new_estimate:,} · **Whole-offcut scrap estimate:** ₹{custom_scrap_estimate:,}")
+                st.dataframe(
+                    [{"Part requirement": r["part"], "New-material estimate (₹)": r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows],
+                    use_container_width=True, hide_index=True
+                )
+
+                if st.button("Add another part", key="custom_ai_add_part"):
+                    if len(edited_custom_parts) >= 10:
+                        st.warning("A custom draft can contain up to 10 distinct part types.")
                     else:
                         draft_copy = dict(custom_draft)
-                        draft_copy["parts"] = edited_custom_parts[:remove_index] + edited_custom_parts[remove_index + 1:]
+                        draft_copy["parts"] = edited_custom_parts + [{
+                            "id": uuid.uuid4().hex[:10], "name": f"Additional part {len(edited_custom_parts) + 1}",
+                            "length": 200, "width": 100, "thickness": 18 if custom_draft["material"] == "Wood" else 3,
+                            "quantity": 1, "reason": "Added by the user; adjust dimensions to suit your design."
+                        }]
                         st.session_state["custom_ai_draft"] = draft_copy
-                        st.session_state["custom_ai_remove_mode"] = False
                         st.session_state.pop("custom_ai_match_results", None)
                         st.session_state.pop("custom_ai_match_signature", None)
                         st.rerun()
 
-            custom_signature = json.dumps({
-                "material": custom_draft["material"], "parts": expanded_custom_parts,
-                "area": custom_pickup_area.strip().casefold(), "allowance": int(custom_allowance)
-            }, sort_keys=True)
-            if st.button("Find matching scrap for this custom project", type="primary", key="custom_ai_match", use_container_width=True):
-                if not any(part["name"].strip() for part in edited_custom_parts):
-                    st.warning("Add a name for at least one part.")
-                elif physical_piece_count > 30:
-                    st.warning("Reduce the total quantity to 30 pieces or fewer before matching.")
-                else:
-                    custom_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
-                    if custom_pickup_area.strip():
-                        q = custom_pickup_area.strip().casefold()
-                        custom_inventory = [item for item in custom_inventory if q in (str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold())]
-                    custom_matches = allocate_project_parts(
-                        custom_draft["material"], expanded_custom_parts, custom_inventory,
-                        allowance_per_side=int(custom_allowance),
+                if edited_custom_parts and st.button("Remove a part…", key="custom_ai_toggle_remove"):
+                    st.session_state["custom_ai_remove_mode"] = not st.session_state.get("custom_ai_remove_mode", False)
+                    st.rerun()
+                if st.session_state.get("custom_ai_remove_mode", False) and edited_custom_parts:
+                    remove_index = st.selectbox(
+                        "Choose the part to remove", options=list(range(len(edited_custom_parts))),
+                        format_func=lambda i: f"{i + 1}. {edited_custom_parts[i]['name']}",
+                        key="custom_ai_remove_index",
                     )
-                    st.session_state["custom_ai_match_results"] = custom_matches
-                    st.session_state["custom_ai_match_signature"] = custom_signature
-
-            if st.session_state.get("custom_ai_match_signature") == custom_signature:
-                custom_matches = st.session_state.get("custom_ai_match_results", [])
-                assigned_custom = [(part, pieces[0]) for part, pieces in custom_matches if pieces]
-                missing_custom = [part for part, pieces in custom_matches if not pieces]
-                st.markdown("### Matching results")
-                st.info(f"{len(assigned_custom)} of {len(custom_matches)} required pieces are assigned. Multiple parts may be cut from the same physical offcut when the simple layout fits; its listing price is counted only once. Rotation is allowed, and the planner includes {int(custom_allowance)} mm allowance on every edge. This is a heuristic cut plan, not an industrial nesting guarantee.")
-                if assigned_custom:
-                    shown_cut_units = {}
-                    for required_part, piece in assigned_custom:
-                        unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
-                        if unit_key in shown_cut_units:
-                            st.write(f"- **{required_part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
+                    if st.button("Confirm remove part", key="custom_ai_confirm_remove"):
+                        if len(edited_custom_parts) <= 1:
+                            st.warning("Keep at least one part in the draft.")
                         else:
-                            shown_cut_units[unit_key] = required_part["name"]
-                            extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != required_part["name"]]
-                            suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
-                            st.write(f"- **{required_part['name']}** → **{piece.get('name', 'Offcut')}** — {piece.get('length')} × {piece.get('width')} × {piece.get('thickness')} mm, ₹{piece.get('price', 0)} · {piece.get('area', 'Pickup area not provided')}{suffix}")
-                if missing_custom:
-                    st.warning("No suitable offcut was assigned to: " + ", ".join(part["name"] for part in missing_custom) + ". Try changing dimensions, quantity or pickup area.")
-                elif assigned_custom:
-                    st.success("All required pieces have a matching offcut in the current inventory.")
+                            draft_copy = dict(custom_draft)
+                            draft_copy["parts"] = edited_custom_parts[:remove_index] + edited_custom_parts[remove_index + 1:]
+                            st.session_state["custom_ai_draft"] = draft_copy
+                            st.session_state["custom_ai_remove_mode"] = False
+                            st.session_state.pop("custom_ai_match_results", None)
+                            st.session_state.pop("custom_ai_match_signature", None)
+                            st.rerun()
 
-            if custom_draft.get("design_notes"):
-                st.markdown("**Review before building**")
-                for note in custom_draft["design_notes"]:
-                    st.write(f"- {note}")
-            st.caption("AI drafts are suggestions only. Verify dimensions, material grade, stability, joinery, tooling and safe construction with a qualified person where appropriate.")
+                custom_signature = json.dumps({
+                    "material": custom_draft["material"], "parts": expanded_custom_parts,
+                    "area": custom_pickup_area.strip().casefold(), "allowance": int(custom_allowance)
+                }, sort_keys=True)
+                if st.button("Find matching scrap for this custom project", type="primary", key="custom_ai_match", use_container_width=True):
+                    if not any(part["name"].strip() for part in edited_custom_parts):
+                        st.warning("Add a name for at least one part.")
+                    elif physical_piece_count > 30:
+                        st.warning("Reduce the total quantity to 30 pieces or fewer before matching.")
+                    else:
+                        custom_inventory = [item for item in inventory if item.get("status", "Available") == "Available"]
+                        if custom_pickup_area.strip():
+                            q = custom_pickup_area.strip().casefold()
+                            custom_inventory = [item for item in custom_inventory if q in (str(item.get("area", "")).casefold() + " " + str(item.get("pickup_location", "")).casefold())]
+                        custom_matches = allocate_project_parts(
+                            custom_draft["material"], expanded_custom_parts, custom_inventory,
+                            allowance_per_side=int(custom_allowance),
+                        )
+                        st.session_state["custom_ai_match_results"] = custom_matches
+                        st.session_state["custom_ai_match_signature"] = custom_signature
 
-    st.divider()
-    st.subheader("Standard project ideas")
-    idea_filter = st.selectbox("What do you have or want to make?", ["Any material", "Wood", "Metal"])
-    ideas = [
-        {"title": "Wall shelf", "material": "Wood", "difficulty": "Beginner", "parts": "2 side supports, 1 shelf panel", "tools": "Saw, drill, screws, measuring tape", "time": "2–4 hours", "description": "A small shelf for books, tools or everyday items."},
-        {"title": "Desk organiser", "material": "Wood", "difficulty": "Beginner", "parts": "Base panel, dividers, back panel", "tools": "Saw, glue or screws, sandpaper", "time": "1–3 hours", "description": "A compact organiser for stationery or small workshop tools."},
-        {"title": "Metal tool stand", "material": "Metal", "difficulty": "Intermediate", "parts": "Base plate, supports, brackets", "tools": "Measuring tools, drill; suitable metalworking equipment", "time": "Half a day", "description": "A small stand for organising workshop tools. Use safe, suitable fabrication methods."},
-        {"title": "Small planter stand", "material": "Wood", "difficulty": "Beginner", "parts": "Top panel, four legs, braces", "tools": "Saw, drill, screws, sandpaper", "time": "2–4 hours", "description": "A simple stand for a small plant pot."},
-        {"title": "Metal parts tray", "material": "Metal", "difficulty": "Intermediate", "parts": "Base sheet, side strips", "tools": "Metal shears or suitable workshop tools; gloves and eye protection", "time": "2–4 hours", "description": "A shallow tray for storing small parts."},
-    ]
-    idea_parts = {
-        "Wall shelf": [{"name":"Shelf panel", "length":600, "width":250, "thickness":18, "quantity":1}, {"name":"Side support 1", "length":250, "width":150, "thickness":18, "quantity":1}, {"name":"Side support 2", "length":250, "width":150, "thickness":18, "quantity":1}],
-        "Desk organiser": [{"name":"Base panel", "length":300, "width":180, "thickness":12, "quantity":1}, {"name":"Divider 1", "length":180, "width":100, "thickness":12, "quantity":1}, {"name":"Divider 2", "length":180, "width":100, "thickness":12, "quantity":1}],
-        "Metal tool stand": [{"name":"Base plate", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Support 1", "length":250, "width":50, "thickness":3, "quantity":1}, {"name":"Support 2", "length":250, "width":50, "thickness":3, "quantity":1}],
-        "Small planter stand": [{"name":"Top panel", "length":300, "width":300, "thickness":18, "quantity":1}, {"name":"Leg 1", "length":300, "width":40, "thickness":18, "quantity":1}, {"name":"Leg 2", "length":300, "width":40, "thickness":18, "quantity":1}],
-        "Metal parts tray": [{"name":"Base sheet", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Side strip 1", "length":300, "width":40, "thickness":3, "quantity":1}, {"name":"Side strip 2", "length":200, "width":40, "thickness":3, "quantity":1}],
-    }
-    shown = [i for i in ideas if idea_filter == "Any material" or i["material"] == idea_filter]
-    for idea in shown:
-        with st.container(border=True):
-            photo_col, details_col = st.columns([1, 2.2], gap="medium")
-            with photo_col:
-                st.image(IDEA_IMAGES.get(idea["title"], material_image(idea["material"])), use_container_width=True)
-                st.caption("Illustrative stock photo")
-            with details_col:
-                st.subheader(idea["title"])
-                st.caption(f"{idea['material']} · {idea['difficulty']} · Estimated time: {idea['time']}")
-                st.write(idea["description"])
-                st.write(f"**Suggested parts:** {idea['parts']}")
-                st.write(f"**Tools:** {idea['tools']}")
-                if st.button("Review and customise project", key=f"idea_{idea['title']}"):
-                    st.session_state.selected_idea = idea["title"]
-                    st.session_state.idea_draft_parts = [x.copy() for x in idea_parts[idea["title"]]]
-    if st.session_state.get("selected_idea"):
-        selected_title = st.session_state.selected_idea
-        selected_idea = next((x for x in ideas if x["title"] == selected_title), None)
-        if selected_idea:
-            st.divider()
-            st.subheader(f"Review project draft: {selected_title}")
-            st.caption("Edit each part's dimensions and quantity before searching. Dimensions are starter estimates, not a certified design.")
-            draft_material = selected_idea["material"]
-            edited_parts = []
-            for idx, part in enumerate(st.session_state.idea_draft_parts):
-                st.markdown(f"**{part['name']}**")
-                a,b,c,d,e = st.columns(5)
-                with a: pname = st.text_input("Part name", value=part["name"], key=f"idea_name_{selected_title}_{idx}")
-                with b: plen = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"idea_len_{selected_title}_{idx}")
-                with c: pwid = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"idea_wid_{selected_title}_{idx}")
-                with d: pthick = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"idea_thick_{selected_title}_{idx}")
-                with e: pqty = st.number_input("Quantity", min_value=1, max_value=100, value=int(part.get("quantity", 1)), step=1, key=f"idea_qty_{selected_title}_{idx}")
-                edited_parts.append({"name":pname, "length":int(plen), "width":int(pwid), "thickness":int(pthick), "quantity":int(pqty)})
-            idea_area = st.text_input("Pickup place (optional)", key=f"idea_area_{selected_title}", placeholder="e.g. Guindy, Chennai")
-            idea_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, key=f"idea_allowance_{selected_title}")
-            cost_rows, new_est, scrap_est = project_cost_summary(edited_parts, inventory, draft_material, int(idea_allowance))
-            st.markdown("### Cost estimate")
-            st.caption("Rough prototype estimate from sample listing prices, not a live supplier quote. New-material cost is an area-based proxy; each whole offcut used is counted once. Labour, transport and blade kerf are excluded.")
-            st.write(f"**Estimated new-material equivalent:** ₹{new_est:,} · **Whole-offcut scrap estimate:** ₹{scrap_est:,}")
-            st.dataframe([{"Part":r["part"], "New material estimate (₹)":r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows], use_container_width=True, hide_index=True)
-            if st.button("Find matching scrap for this project", type="primary", key=f"idea_find_{selected_title}"):
-                idea_inventory = [x for x in inventory if x.get("status", "Available") == "Available"]
-                if idea_area.strip():
-                    q = idea_area.strip().casefold()
-                    idea_inventory = [x for x in idea_inventory if q in (str(x.get("area", "")).casefold()+" "+str(x.get("pickup_location", "")).casefold())]
-                matches = allocate_project_parts(draft_material, edited_parts, idea_inventory, allowance_per_side=int(idea_allowance))
-                st.session_state.idea_match_results = matches
-                st.session_state.idea_match_title = selected_title
-            if st.session_state.get("idea_match_title") == selected_title:
-                matches = st.session_state.get("idea_match_results", [])
-                found = [(part, pieces[0]) for part, pieces in matches if pieces]
-                missing = [part for part, pieces in matches if not pieces]
-                st.subheader("Matching materials")
-                if found:
-                    st.caption("Several parts can share one offcut when the simple cutting layout permits it; the offcut price is counted once in the project estimate.")
-                    shown_cut_units = {}
-                    for part, piece in found:
-                        unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
-                        if unit_key in shown_cut_units:
-                            st.write(f"- **{part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
-                        else:
-                            shown_cut_units[unit_key] = part["name"]
-                            extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != part["name"]]
-                            suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
-                            st.write(f"- **{part['name']}** → {piece['name']} ({piece['length']} × {piece['width']} × {piece['thickness']} mm), ₹{piece.get('price',0)} · {piece.get('area','Pickup area not provided')}{suffix}")
-                if missing:
-                    st.warning("No matching material was found for: " + ", ".join(x["name"] for x in missing) + ". Try changing dimensions, material, or pickup area.")
-                elif not found:
-                    st.warning("No matching materials found. Try changing dimensions or checking the inventory.")
-                else:
-                    st.success(f"Matched {len(found)} of {len(matches)} part requirements. Unmatched parts are listed above if any.")
-    st.info("These sample project ideas are starter drafts. Check dimensions, stability and safe construction before building.")
+                if st.session_state.get("custom_ai_match_signature") == custom_signature:
+                    custom_matches = st.session_state.get("custom_ai_match_results", [])
+                    assigned_custom = [(part, pieces[0]) for part, pieces in custom_matches if pieces]
+                    missing_custom = [part for part, pieces in custom_matches if not pieces]
+                    st.markdown("### Matching results")
+                    st.info(f"{len(assigned_custom)} of {len(custom_matches)} required pieces are assigned. Multiple parts may be cut from the same physical offcut when the simple layout fits; its listing price is counted only once. Rotation is allowed, and the planner includes {int(custom_allowance)} mm allowance on every edge. This is a heuristic cut plan, not an industrial nesting guarantee.")
+                    if assigned_custom:
+                        shown_cut_units = {}
+                        for required_part, piece in assigned_custom:
+                            unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
+                            if unit_key in shown_cut_units:
+                                st.write(f"- **{required_part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
+                            else:
+                                shown_cut_units[unit_key] = required_part["name"]
+                                extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != required_part["name"]]
+                                suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
+                                st.write(f"- **{required_part['name']}** → **{piece.get('name', 'Offcut')}** — {piece.get('length')} × {piece.get('width')} × {piece.get('thickness')} mm, ₹{piece.get('price', 0)} · {piece.get('area', 'Pickup area not provided')}{suffix}")
+                    if missing_custom:
+                        st.warning("No suitable offcut was assigned to: " + ", ".join(part["name"] for part in missing_custom) + ". Try changing dimensions, quantity or pickup area.")
+                    elif assigned_custom:
+                        st.success("All required pieces have a matching offcut in the current inventory.")
+
+                if custom_draft.get("design_notes"):
+                    st.markdown("**Review before building**")
+                    for note in custom_draft["design_notes"]:
+                        st.write(f"- {note}")
+                st.caption("AI drafts are suggestions only. Verify dimensions, material grade, stability, joinery, tooling and safe construction with a qualified person where appropriate.")
+
+
+    with standard_tab:
+        st.subheader("Standard project ideas")
+        idea_filter = st.selectbox("What do you have or want to make?", ["Any material", "Wood", "Metal"])
+        ideas = [
+            {"title": "Wall shelf", "material": "Wood", "difficulty": "Beginner", "parts": "2 side supports, 1 shelf panel", "tools": "Saw, drill, screws, measuring tape", "time": "2–4 hours", "description": "A small shelf for books, tools or everyday items."},
+            {"title": "Desk organiser", "material": "Wood", "difficulty": "Beginner", "parts": "Base panel, dividers, back panel", "tools": "Saw, glue or screws, sandpaper", "time": "1–3 hours", "description": "A compact organiser for stationery or small workshop tools."},
+            {"title": "Metal tool stand", "material": "Metal", "difficulty": "Intermediate", "parts": "Base plate, supports, brackets", "tools": "Measuring tools, drill; suitable metalworking equipment", "time": "Half a day", "description": "A small stand for organising workshop tools. Use safe, suitable fabrication methods."},
+            {"title": "Small planter stand", "material": "Wood", "difficulty": "Beginner", "parts": "Top panel, four legs, braces", "tools": "Saw, drill, screws, sandpaper", "time": "2–4 hours", "description": "A simple stand for a small plant pot."},
+            {"title": "Metal parts tray", "material": "Metal", "difficulty": "Intermediate", "parts": "Base sheet, side strips", "tools": "Metal shears or suitable workshop tools; gloves and eye protection", "time": "2–4 hours", "description": "A shallow tray for storing small parts."},
+        ]
+        idea_parts = {
+            "Wall shelf": [{"name":"Shelf panel", "length":600, "width":250, "thickness":18, "quantity":1}, {"name":"Side support 1", "length":250, "width":150, "thickness":18, "quantity":1}, {"name":"Side support 2", "length":250, "width":150, "thickness":18, "quantity":1}],
+            "Desk organiser": [{"name":"Base panel", "length":300, "width":180, "thickness":12, "quantity":1}, {"name":"Divider 1", "length":180, "width":100, "thickness":12, "quantity":1}, {"name":"Divider 2", "length":180, "width":100, "thickness":12, "quantity":1}],
+            "Metal tool stand": [{"name":"Base plate", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Support 1", "length":250, "width":50, "thickness":3, "quantity":1}, {"name":"Support 2", "length":250, "width":50, "thickness":3, "quantity":1}],
+            "Small planter stand": [{"name":"Top panel", "length":300, "width":300, "thickness":18, "quantity":1}, {"name":"Leg 1", "length":300, "width":40, "thickness":18, "quantity":1}, {"name":"Leg 2", "length":300, "width":40, "thickness":18, "quantity":1}],
+            "Metal parts tray": [{"name":"Base sheet", "length":300, "width":200, "thickness":3, "quantity":1}, {"name":"Side strip 1", "length":300, "width":40, "thickness":3, "quantity":1}, {"name":"Side strip 2", "length":200, "width":40, "thickness":3, "quantity":1}],
+        }
+        shown = [i for i in ideas if idea_filter == "Any material" or i["material"] == idea_filter]
+        for idea in shown:
+            with st.container(border=True):
+                photo_col, details_col = st.columns([1, 2.2], gap="medium")
+                with photo_col:
+                    st.image(IDEA_IMAGES.get(idea["title"], material_image(idea["material"])), use_container_width=True)
+                    st.caption("Illustrative stock photo")
+                with details_col:
+                    st.subheader(idea["title"])
+                    st.caption(f"{idea['material']} · {idea['difficulty']} · Estimated time: {idea['time']}")
+                    st.write(idea["description"])
+                    st.write(f"**Suggested parts:** {idea['parts']}")
+                    st.write(f"**Tools:** {idea['tools']}")
+                    if st.button("Review and customise project", key=f"idea_{idea['title']}"):
+                        st.session_state.selected_idea = idea["title"]
+                        st.session_state.idea_draft_parts = [x.copy() for x in idea_parts[idea["title"]]]
+        if st.session_state.get("selected_idea"):
+            selected_title = st.session_state.selected_idea
+            selected_idea = next((x for x in ideas if x["title"] == selected_title), None)
+            if selected_idea:
+                st.divider()
+                st.subheader(f"Review project draft: {selected_title}")
+                st.caption("Edit each part's dimensions and quantity before searching. Dimensions are starter estimates, not a certified design.")
+                draft_material = selected_idea["material"]
+                edited_parts = []
+                for idx, part in enumerate(st.session_state.idea_draft_parts):
+                    st.markdown(f"**{part['name']}**")
+                    a,b,c,d,e = st.columns(5)
+                    with a: pname = st.text_input("Part name", value=part["name"], key=f"idea_name_{selected_title}_{idx}")
+                    with b: plen = st.number_input("Length (mm)", min_value=1, max_value=10000, value=int(part["length"]), step=10, key=f"idea_len_{selected_title}_{idx}")
+                    with c: pwid = st.number_input("Width (mm)", min_value=1, max_value=10000, value=int(part["width"]), step=10, key=f"idea_wid_{selected_title}_{idx}")
+                    with d: pthick = st.number_input("Thickness (mm)", min_value=1, max_value=500, value=int(part["thickness"]), step=1, key=f"idea_thick_{selected_title}_{idx}")
+                    with e: pqty = st.number_input("Quantity", min_value=1, max_value=100, value=int(part.get("quantity", 1)), step=1, key=f"idea_qty_{selected_title}_{idx}")
+                    edited_parts.append({"name":pname, "length":int(plen), "width":int(pwid), "thickness":int(pthick), "quantity":int(pqty)})
+                idea_area = st.text_input("Pickup place (optional)", key=f"idea_area_{selected_title}", placeholder="e.g. Guindy, Chennai")
+                idea_allowance = st.number_input("Cutting allowance per side (mm)", min_value=0, max_value=100, value=5, key=f"idea_allowance_{selected_title}")
+                cost_rows, new_est, scrap_est = project_cost_summary(edited_parts, inventory, draft_material, int(idea_allowance))
+                st.markdown("### Cost estimate")
+                st.caption("Rough prototype estimate from sample listing prices, not a live supplier quote. New-material cost is an area-based proxy; each whole offcut used is counted once. Labour, transport and blade kerf are excluded.")
+                st.write(f"**Estimated new-material equivalent:** ₹{new_est:,} · **Whole-offcut scrap estimate:** ₹{scrap_est:,}")
+                st.dataframe([{"Part":r["part"], "New material estimate (₹)":r["new_estimate"], "Scrap cost contribution (₹)": (r["scrap_price"] if r["scrap_price"] not in (None, 0) else ("Same offcut — cost counted once" if r["scrap_price"] == 0 else "No match"))} for r in cost_rows], use_container_width=True, hide_index=True)
+                if st.button("Find matching scrap for this project", type="primary", key=f"idea_find_{selected_title}"):
+                    idea_inventory = [x for x in inventory if x.get("status", "Available") == "Available"]
+                    if idea_area.strip():
+                        q = idea_area.strip().casefold()
+                        idea_inventory = [x for x in idea_inventory if q in (str(x.get("area", "")).casefold()+" "+str(x.get("pickup_location", "")).casefold())]
+                    matches = allocate_project_parts(draft_material, expand_part_quantities(edited_parts), idea_inventory, allowance_per_side=int(idea_allowance))
+                    st.session_state.idea_match_results = matches
+                    st.session_state.idea_match_title = selected_title
+                if st.session_state.get("idea_match_title") == selected_title:
+                    matches = st.session_state.get("idea_match_results", [])
+                    found = [(part, pieces[0]) for part, pieces in matches if pieces]
+                    missing = [part for part, pieces in matches if not pieces]
+                    st.subheader("Matching materials")
+                    if found:
+                        st.caption("Several parts can share one offcut when the simple cutting layout permits it; the offcut price is counted once in the project estimate.")
+                        shown_cut_units = {}
+                        for part, piece in found:
+                            unit_key = piece.get("cut_plan_unit_key", f"legacy-{piece.get('id', piece.get('name'))}")
+                            if unit_key in shown_cut_units:
+                                st.write(f"- **{part['name']}** → cut from the same offcut as **{shown_cut_units[unit_key]}** (no additional listing cost).")
+                            else:
+                                shown_cut_units[unit_key] = part["name"]
+                                extra_names = [name for name in piece.get("cut_plan_part_names", []) if name != part["name"]]
+                                suffix = f" · shared cut plan also covers: {', '.join(extra_names)}" if extra_names else ""
+                                st.write(f"- **{part['name']}** → {piece['name']} ({piece['length']} × {piece['width']} × {piece['thickness']} mm), ₹{piece.get('price',0)} · {piece.get('area','Pickup area not provided')}{suffix}")
+                    if missing:
+                        st.warning("No matching material was found for: " + ", ".join(x["name"] for x in missing) + ". Try changing dimensions, material, or pickup area.")
+                    elif not found:
+                        st.warning("No matching materials found. Try changing dimensions or checking the inventory.")
+                    else:
+                        st.success(f"Matched {len(found)} of {len(matches)} part requirements. Unmatched parts are listed above if any.")
+        st.info("These sample project ideas are starter drafts. Check dimensions, stability and safe construction before building.")
 
 
 # -------------------- SAVE FOR LATER --------------------
