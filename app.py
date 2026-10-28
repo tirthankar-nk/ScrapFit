@@ -367,6 +367,47 @@ st.markdown("""
         background: #DDE9DE;
     }
 
+    /* Keep the sidebar open/close arrow visible on mobile and desktop. */
+    [data-testid="stSidebarCollapseButton"],
+    [data-testid="stSidebarCollapsedControl"],
+    [data-testid="stSidebarCollapseButton"] button,
+    [data-testid="stSidebarCollapsedControl"] button {
+        color: #173F34 !important;
+        background: #D8EBDD !important;
+        border: 1px solid #47745B !important;
+        border-radius: 10px !important;
+        opacity: 1 !important;
+        box-shadow: 0 1px 4px rgba(23, 63, 52, 0.14) !important;
+    }
+
+    [data-testid="stSidebarCollapseButton"] svg,
+    [data-testid="stSidebarCollapsedControl"] svg,
+    [data-testid="stSidebarCollapseButton"] button svg,
+    [data-testid="stSidebarCollapsedControl"] button svg {
+        color: #173F34 !important;
+        stroke: #173F34 !important;
+        fill: #173F34 !important;
+        opacity: 1 !important;
+    }
+
+    [data-theme="dark"] [data-testid="stSidebarCollapseButton"],
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"],
+    [data-theme="dark"] [data-testid="stSidebarCollapseButton"] button,
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] button {
+        color: #173F34 !important;
+        background: #B8E3C5 !important;
+        border-color: #B8E3C5 !important;
+    }
+
+    [data-theme="dark"] [data-testid="stSidebarCollapseButton"] svg,
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] svg,
+    [data-theme="dark"] [data-testid="stSidebarCollapseButton"] button svg,
+    [data-theme="dark"] [data-testid="stSidebarCollapsedControl"] button svg {
+        color: #173F34 !important;
+        stroke: #173F34 !important;
+        fill: #173F34 !important;
+    }
+
     .scrapfit-about-card {
         background: white;
         border: 1px solid var(--line);
@@ -1113,7 +1154,7 @@ if page == "Home":
     with left:
         st.markdown('<div class="sf-card"><h3>Available in this prototype</h3><p>• Browse sample wood and metal listings<br>• Filter by pickup area or search by dimensions and thickness<br>• Create a manual project cut list and set quantity for each part<br>• Generate and edit an AI-assisted draft parts list in Custom Project<br>• Match requirements against the inventory using rules<br>• View a prototype cutting plan and rough cost estimates<br>• View approximate pickup locations on a map<br>• Save listings temporarily and contact a seller using the listed details</p><p class="sf-footnote">Listing changes and uploaded photos are not yet backed by a shared permanent database; demo inventory and locations should be treated as illustrative.</p></div>', unsafe_allow_html=True)
     with right:
-        st.markdown('<div class="sf-card"><h3>Planned enhancements</h3><p><strong>More reliable listings</strong><br>Verified workshop profiles, clearer condition grades and availability updates.<br><br><strong>Traceable inventory</strong><br>QR codes that open an individual offcut record and help workshops track stock.<br><br><strong>Smarter cutting plans</strong><br>Improve layout optimisation and account for blade kerf, grain direction and usable defects.<br><br><strong>Broader local reuse</strong><br>Persistent cloud inventory and photo storage, more material types, and ways to group nearby pickups.<br><br><strong>Sustainable business model</strong><br>Explore clearly labelled promoted shop listings or advertising; consider transaction commissions only when completed sales can be tracked reliably.</p><p class="sf-footnote">These are roadmap ideas, not features currently offered by the prototype.</p></div>', unsafe_allow_html=True)
+        st.markdown('<div class="sf-card"><h3>Planned enhancements</h3><p><strong>Buyer and seller accounts</strong><br>Separate, role-based experiences so buyers can manage saved projects and searches while sellers manage listings, quantities, availability and shop details. Accounts will be introduced with secure sign-in and persistent cloud storage.<br><br><strong>More reliable listings</strong><br>Verified workshop profiles, clearer condition grades and availability updates.<br><br><strong>Traceable inventory</strong><br>QR codes that open an individual offcut record and help workshops track stock.<br><br><strong>Smarter cutting plans</strong><br>Improve layout optimisation and account for blade kerf, grain direction and usable defects.<br><br><strong>Broader local reuse</strong><br>Persistent cloud inventory and photo storage, more material types, and ways to group nearby pickups.<br><br><strong>Sustainable business model</strong><br>Explore clearly labelled promoted shop listings or advertising; consider transaction commissions only when completed sales can be tracked reliably.</p><p class="sf-footnote">These are roadmap ideas, not features currently offered by the prototype.</p></div>', unsafe_allow_html=True)
 
     st.markdown('<p class="sf-footnote">Demo notice: sample listing details and approximate pickup locations are for demonstration and are not verified offers. Illustrative material photographs may not show the exact item listed. Before purchasing or building, confirm actual dimensions, material grade, condition, price, availability and collection with the seller. AI-generated part lists and cutting plans are estimates that require review.</p>', unsafe_allow_html=True)
 
