@@ -1073,27 +1073,14 @@ with st.sidebar:
     st.markdown("## ♻ ScrapFit")
     st.caption("Find the next use for every offcut")
     st.divider()
+    page = st.radio(
+        "Navigate",
+        ["Home", "Find Scrap", "Project Planner", "Project Ideas", "List Scrap", "Inventory", "Save for Later"],
+        label_visibility="collapsed",
+        key="main_navigation",
+    )
+    st.divider()
     st.caption("Local prototype · Demo inventory")
-
-# Use the main-screen page selector instead of sidebar-only navigation.
-# This avoids relying on JavaScript to control Streamlit's isolated sidebar,
-# which does not reliably work on mobile browsers.
-st.markdown(
-    """<style>
-    @media (max-width: 768px) {
-      [data-testid="stSidebar"] { display: none !important; }
-      [data-testid="stSidebarCollapsedControl"] { display: none !important; }
-      [data-testid="stMainBlockContainer"] { padding-top: 1rem; }
-    }
-    </style>""",
-    unsafe_allow_html=True,
-)
-page = st.selectbox(
-    "Choose a page",
-    ["Home", "Find Scrap", "Project Planner", "Project Ideas", "List Scrap", "Inventory", "Save for Later"],
-    label_visibility="collapsed",
-    key="main_navigation",
-)
 
 
 # -------------------- HOME PAGE --------------------
