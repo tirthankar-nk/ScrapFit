@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import streamlit as st
+import streamlit.components.v1 as components
 
 # -------------------- CONFIGURATION --------------------
 
@@ -1081,6 +1082,36 @@ with st.sidebar:
     )
     st.divider()
     st.caption("Local prototype · Demo inventory")
+
+# On phones, close the sidebar immediately after a navigation option is selected.
+# The small component watches the parent Streamlit page and clicks its native
+# sidebar-collapse control; desktop navigation is left unchanged.
+components.html(
+    """<script>
+    (() => {
+      try {
+        const doc = window.parent.document;
+        if (window.parent.innerWidth > 768) return;
+        if (window.parent.__scrapfitMobileNavCloseInstalled) return;
+        window.parent.__scrapfitMobileNavCloseInstalled = true;
+        doc.addEventListener('click', (event) => {
+          const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+          if (!sidebar || window.parent.innerWidth > 768) return;
+          const option = event.target.closest('[role="radio"], [data-testid="stRadio"] label');
+          if (!option || !sidebar.contains(option)) return;
+          window.parent.setTimeout(() => {
+            const closeButton = doc.querySelector(
+              '[data-testid="stSidebarCollapseButton"] button, button[data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapseButton"]'
+            );
+            if (closeButton) closeButton.click();
+          }, 180);
+        }, true);
+      } catch (e) { /* Keep navigation usable if browser isolation blocks parent access. */ }
+    })();
+    </script>""",
+    height=0,
+    width=0,
+)
 
 
 # -------------------- HOME PAGE --------------------
